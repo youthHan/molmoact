@@ -36,7 +36,7 @@ MolmoAct is a repository for training and using Ai2's open-sourced Action Reason
 | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | MolmoAct Dataset                      | This dataset contains MolmoAct Dataset in Lerobot format. All contents in this dataset were collected in-house by Ai2.                                                  | https://huggingface.co/datasets/allenai/MolmoAct-Dataset                  |
 | MolmoaAct Pre-training Mixture        | Data Mixture used for MolmoAct Pretraining. Contains a subset of OXE formulated as Action Reasoning Data along with auxiliary robot data and Multimodal Web data        | https://huggingface.co/datasets/allenai/MolmoAct-Pretraining-Mixture      |
-| MolmoActMid-training Mixture          | Data Mixture used for MolmoAct Midtraining. Contains MolmoAct Dataset formulated as Action Reasoning Data                                                               | https://huggingface.co/datasets/allenai/MolmoAct-Midtraining-Mixture      |
+| MolmoAct Mid-training Mixture         | Data Mixture used for MolmoAct Midtraining. Contains MolmoAct Dataset formulated as Action Reasoning Data                                                               | https://huggingface.co/datasets/allenai/MolmoAct-Midtraining-Mixture      |
 
 
 
