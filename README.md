@@ -1,11 +1,9 @@
-<p align="center">
-  <a href="assets/molmoact_video.mp4">
-    <img src="assets/molmoact_video.mp4" alt="Watch the video" width="600">
-  </a>
+<div align="center">
+  <!-- <img src="assets/molmoact_logo.svg" alt="MolmoAct Logo" width="800" style="margin-left:'auto' margin-right:'auto' display:'block'"/> -->
   <br>
   <br>
-  <h1>MolmoAct: Action Reasoning Models that can Reason in Space</h1>
-</p>
+  <h1>MolmoAct: Multimodal Open Language Model for Action</h1>
+</div>
 
 <p align="center">
   <a href="https://github.com/allenai/MolmoAct/blob/release/LICENSE">
@@ -26,6 +24,8 @@
 </p>
 
 MolmoAct is a repository for training and using Ai2's open-sourced Action Reasoning Model that can reason in space.
+
+Note: Training code, evaluation code, and data processing scripts will also be released soon. We are finalizing them for public release to ensure ease of reproducibility and clarity.
 
 
 ## Release Notes
