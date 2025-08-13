@@ -30,18 +30,28 @@ Note: Training code, evaluation code, and data processing scripts will also be r
 
 ## Release Notes
 
-- [2025/08/12] **🔥 [Datasets](https://huggingface.co/collections/allenai/molmoact-data-mixture-6897e583e13b6c2cf3ea2b80)** for pre-training and mid-training has been released, which consists of:
+- [2025/08/12] **🔥 [Datasets](https://huggingface.co/collections/allenai/molmoact-data-mixture-6897e583e13b6c2cf3ea2b80)** used for our pre-training and mid-training has been released, which consists of:
 
-  - [**MolmoAct Dataset**](https://huggingface.co/datasets/allenai/MolmoAct-Dataset): a dataset with 10k high-quality trajectories of a single-arm Franka robot performing 93 unique manipulation tasks in both home and tabletop environments.
-  - [**Pre-training Mixture**](https://huggingface.co/datasets/allenai/MolmoAct-Pretraining-Mixture): subset of OXE, formualted to action reasoning data, along with auxiliary robot data.
-  - [**Mid-training Mixture**](https://huggingface.co/datasets/allenai/MolmoAct-Midtraining-Mixture): MolmoAct Dataset, formualted to action reasoning data, along with auxiliary robot data.
+| Data                        | Description                                                                                                                                                             | Dataset Path                                                              |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| MolmoAct Dataset            | This dataset contains MolmoAct Dataset in Lerobot format. All contents in this dataset were collected in-house by Ai2.                                                  | https://huggingface.co/datasets/allenai/MolmoAct-Dataset                  |
+| Pre-training Mixture        | Data Mixture used for MolmoAct Pretraining. Contains a subset of OXE formulated as Action Reasoning Data along with auxiliary robot data and Multimodal Web data        | https://huggingface.co/datasets/allenai/MolmoAct-Pretraining-Mixture      |
+| Mid-training Mixture        | Data Mixture used for MolmoAct Midtraining. Contains MolmoAct Dataset formulated as Action Reasoning Data                                                               | https://huggingface.co/datasets/allenai/MolmoAct-Midtraining-Mixture      |
+
+
+
 
 - [2025/08/12] **🔥 [Models](https://huggingface.co/collections/allenai/molmoact-689697591a3936fba38174d7)** has been released, which consists of:
 
-  - [**MolmoAct-7B-D**](https://huggingface.co/allenai/MolmoAct-7B-D-0812): our best and demo version of MolmoAct; use for post-training.
-  - [**MolmoAct-7B-O**](https://huggingface.co/allenai/MolmoAct-7B-O-0812): our most open version of MolmoAct; use for post-training.
-  - [**MolmoAct-7B-D-Pretrain**](https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812): our best and demo version of pre-trained MolmoAct; use for mid-training, or replicating zero-shot results on SimplerEnv (Google Robot).
-  - [**MolmoAct-7B-D-Pretrain-RT-1**](https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812): our best and demo version of pre-trained MolmoAct fine-tuned on RT-1; use for replicating fine-tuned results on SimplerEnv (Google Robot).
+
+| Model                       | Use Case          | Description                                                                                                  | Checkpoint Path                                                 |
+| --------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| MolmoAct-7B-D               | Fine-Tuning       | Our best and demo version of MolmoAct that can be adapted to real world by fine-tuning on your own datasets  | https://huggingface.co/allenai/MolmoAct-7B-D-0812               |
+| MolmoAct-7B-O               | Fine-Tuning       | Our most open version of MolmoAct that can be adapt to real world by fine-tuneing on your own datasets       | https://huggingface.co/allenai/MolmoAct-7B-O-0812               |
+| MolmoAct-7B-D-Pretrain      | Inference         | MolmoAct checkpoint used to replicate zero-shot results on SimplerEnv (Google Robot)                         | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812      |
+| MolmoAct-7B-D-Pretrain-RT-1 | Inference         | MolmoAct checkpoint used to replicate fine-tuned results on SimplerEnv (Google Robot)                        | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-RT-1-0812 |
+
+
 
 All artifacts used in creating MolmoAct (data, training code, evaluations, intermediate checkpoints) will be made available at a later date, furthering our commitment to open-source AI development and reproducibility. We will provied link to all artifacts in this repo after release.
 
