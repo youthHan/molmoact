@@ -38,10 +38,10 @@ Note: Training code, evaluation code, and data processing scripts will also be r
 
 - [2025/08/12] **🔥 [Models](https://huggingface.co/collections/allenai/molmoact-689697591a3936fba38174d7)** has been released, which consists of:
 
-  - [**MolmoAct-7B-D**](https://huggingface.co/allenai/MolmoAct-7B-D-0812): our flagship and demo version of MolmoAct; use for post-training.
+  - [**MolmoAct-7B-D**](https://huggingface.co/allenai/MolmoAct-7B-D-0812): our best and demo version of MolmoAct; use for post-training.
   - [**MolmoAct-7B-O**](https://huggingface.co/allenai/MolmoAct-7B-O-0812): our most open version of MolmoAct; use for post-training.
-  - [**MolmoAct-7B-D-Pretrain**](https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812): our flagship and demo version of pre-trained MolmoAct; use for mid-training, or replicating zero-shot results on SimplerEnv (Google Robot).
-  - [**MolmoAct-7B-D-Pretrain-RT-1**](https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812): our flagship and demo version of pre-trained MolmoAct fine-tuned on RT-1; use for replicating fine-tuned results on SimplerEnv (Google Robot).
+  - [**MolmoAct-7B-D-Pretrain**](https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812): our best and demo version of pre-trained MolmoAct; use for mid-training, or replicating zero-shot results on SimplerEnv (Google Robot).
+  - [**MolmoAct-7B-D-Pretrain-RT-1**](https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812): our best and demo version of pre-trained MolmoAct fine-tuned on RT-1; use for replicating fine-tuned results on SimplerEnv (Google Robot).
 
 All artifacts used in creating MolmoAct (data, training code, evaluations, intermediate checkpoints) will be made available at a later date, furthering our commitment to open-source AI development and reproducibility. We will provied link to all artifacts in this repo after release.
 
