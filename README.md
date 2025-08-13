@@ -1,5 +1,5 @@
 <div align="center">
-  <!-- <img src="assets/molmoact_logo.svg" alt="MolmoAct Logo" width="800" style="margin-left:'auto' margin-right:'auto' display:'block'"/> -->
+  <img src="assets/molmoact_logo.svg" alt="MolmoAct Logo" width="800" style="margin-left:'auto' margin-right:'auto' display:'block'"/>
   <br>
   <br>
   <h1>MolmoAct: Multimodal Open Language Model for Action</h1>
