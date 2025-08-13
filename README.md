@@ -25,7 +25,7 @@
 
 MolmoAct is a repository for training and using Ai2's open-sourced Action Reasoning Model that can reason in space.
 
-**Note: Training code, evaluation code, and Data Processing scripts will be released soon. We are finalizing them for public release to ensure ease of reproducibility and clarity.**
+**Note: Training code, evaluation code, and Data Processing scripts will be released soon. We are finalizing them for public release to ensure ease of reproducibility and ease of use.**
 
 
 ## Release Notes
