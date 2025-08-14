@@ -23,47 +23,78 @@
   </a>
 </p>
 
-MolmoAct is a repository for training and using Ai2's open-sourced Action Reasoning Model that can reason in space.
+---
 
-**Note: Training code, evaluation code, and Data Processing scripts will be released soon. We are finalizing them for public release to ensure reproducibility and ease of use.**
+## Table of Contents
 
+- [Overview](#overview)
+- [Release Notes](#release-notes)
+  - [Datasets](#datasets)
+  - [Models](#models)
+- [License and Use](#license-and-use)
+- [Model and Hardware Safety](#model-and-hardware-safety)
+- [Citation](#citation)
+
+### Quick Links
+
+| Section | Link |
+|---|---|
+| Overview | [Go to Overview](#overview) |
+| Datasets | [Go to Datasets](#datasets) |
+| Models | [Go to Models](#models) |
+| License | [Go to License and Use](#license-and-use) |
+| Safety | [Go to Model and Hardware Safety](#model-and-hardware-safety) |
+| Citation | [Go to Citation](#citation) |
+
+---
+
+## Overview
+
+MolmoAct is a repository for training and using AI2’s open-sourced **Action Reasoning Model** that can reason in space.
+
+> **Note:** Training code, evaluation code, and data processing scripts will be released soon. We’re finalizing them for public release to ensure reproducibility and ease of use.
+
+---
 
 ## Release Notes
 
-- [2025/08/12] **🔥 [Datasets](https://huggingface.co/collections/allenai/molmoact-data-mixture-6897e583e13b6c2cf3ea2b80)** used for our pre-training and mid-training has been released, which consists of:
+### Datasets
 
-| Data                                  | Description                                                                                                                                                             | Dataset Path                                                              |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| MolmoAct Dataset                      | This dataset contains MolmoAct Dataset in Lerobot format. All contents in this dataset were collected in-house by Ai2.                                                  | https://huggingface.co/datasets/allenai/MolmoAct-Dataset                  |
-| MolmoaAct Pre-training Mixture        | Data Mixture used for MolmoAct Pretraining. Contains a subset of OXE formulated as Action Reasoning Data along with auxiliary robot data and Multimodal Web data        | https://huggingface.co/datasets/allenai/MolmoAct-Pretraining-Mixture      |
-| MolmoAct Mid-training Mixture         | Data Mixture used for MolmoAct Midtraining. Contains MolmoAct Dataset formulated as Action Reasoning Data                                                               | https://huggingface.co/datasets/allenai/MolmoAct-Midtraining-Mixture      |
+- **[2025/08/12] 🔥 [Datasets](https://huggingface.co/collections/allenai/molmoact-data-mixture-6897e583e13b6c2cf3ea2b80)** used for our pre-training and mid-training have been released:
 
+| Data                               | Description                                                                                                                                  | Dataset Path                                                             |
+|------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
+| MolmoAct Dataset                   | MolmoAct dataset in LeRobot format. All contents were collected in-house by AI2.                                                            | https://huggingface.co/datasets/allenai/MolmoAct-Dataset                 |
+| MolmoAct Pre-training Mixture      | Data mixture for MolmoAct pre-training. Contains a subset of OXE formulated as Action Reasoning data, auxiliary robot data, and web data.   | https://huggingface.co/datasets/allenai/MolmoAct-Pretraining-Mixture     |
+| MolmoAct Mid-training Mixture      | Data mixture for MolmoAct mid-training. Contains MolmoAct Dataset formulated as Action Reasoning data.                                      | https://huggingface.co/datasets/allenai/MolmoAct-Midtraining-Mixture     |
 
+### Models
 
+- **[2025/08/12] 🔥 [Models](https://huggingface.co/collections/allenai/molmoact-689697591a3936fba38174d7)** have been released:
 
-- [2025/08/12] **🔥 [Models](https://huggingface.co/collections/allenai/molmoact-689697591a3936fba38174d7)** has been released, which consists of:
+| Model                       | Use Case     | Description                                                                                                 | Checkpoint Path                                                |
+|----------------------------|--------------|-------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------|
+| MolmoAct-7B-D              | Fine-tuning  | Best/demo MolmoAct; adapt to real robots by fine-tuning on your datasets.                                   | https://huggingface.co/allenai/MolmoAct-7B-D-0812              |
+| MolmoAct-7B-O              | Fine-tuning  | Most open MolmoAct; adapt to real robots by fine-tuning on your datasets.                                   | https://huggingface.co/allenai/MolmoAct-7B-O-0812              |
+| MolmoAct-7B-D-Pretrain     | Inference    | Checkpoint to replicate zero-shot results on SimplerEnv (Google Robot).                                     | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812     |
+| MolmoAct-7B-D-Pretrain-RT-1| Inference    | Checkpoint to replicate RT-1 fine-tuned results on SimplerEnv (Google Robot).                               | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-RT-1-0812|
 
+All artifacts used in creating MolmoAct (data, training code, evaluations, intermediate checkpoints) will be made available later to further our commitment to open-source AI development and reproducibility. We will provide links to all artifacts in this repo after release.
 
-| Model                       | Use Case          | Description                                                                                                  | Checkpoint Path                                                 |
-| --------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| MolmoAct-7B-D               | Fine-Tuning       | Our best and demo version of MolmoAct that can be adapted to real world by fine-tuning on your own datasets  | https://huggingface.co/allenai/MolmoAct-7B-D-0812               |
-| MolmoAct-7B-O               | Fine-Tuning       | Our most open version of MolmoAct that can be adapt to real world by fine-tuneing on your own datasets       | https://huggingface.co/allenai/MolmoAct-7B-O-0812               |
-| MolmoAct-7B-D-Pretrain      | Inference         | MolmoAct checkpoint used to replicate zero-shot results on SimplerEnv (Google Robot)                         | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812      |
-| MolmoAct-7B-D-Pretrain-RT-1 | Inference         | MolmoAct checkpoint used to replicate fine-tuned results on SimplerEnv (Google Robot)                        | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-RT-1-0812 |
-
-
-
-All artifacts used in creating MolmoAct (data, training code, evaluations, intermediate checkpoints) will be made available at a later date, furthering our commitment to open-source AI development and reproducibility. We will provied link to all artifacts in this repo after release.
+---
 
 ## License and Use
 
-MolmoAct is licensed under Apache 2.0. It is intended for research and educational use.
+MolmoAct is licensed under **Apache 2.0** and intended for research and educational use.  
 For more information, please see our [Responsible Use Guidelines](https://allenai.org/responsible-use).
 
+---
 
 ## Model and Hardware Safety
-MolmoAct offers the ability to inspect a visual trace of its intended actions in space before they occur, allowing users to ensure safe behavior by proactively auditing and adjusting the actions of any hardware acting under the model’s instructions. MolmoAct’s action space is bounded within the data provided, and compliance is built into the model to prevent excessive force when resistance is detected. Please follow the hardware manufacturer’s guidelines when using this model with a robot and perform all operations in a safely configured environment.
 
+MolmoAct can display a **visual trace** of its intended actions before execution, enabling proactive auditing and adjustment of behavior. The model’s action space is bounded within the data provided, and compliance is built in to limit excessive force when resistance is detected. Always follow hardware manufacturer guidelines and operate in a safely configured environment.
+
+---
 
 ## Citation
 
@@ -77,5 +108,3 @@ MolmoAct offers the ability to inspect a visual trace of its intended actions in
       primaryClass={cs.RO},
       url={https://arxiv.org/abs/2508.07917}, 
 }
-```
-
