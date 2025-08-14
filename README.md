@@ -27,7 +27,7 @@
 
 ## Table of Contents
 
-1. [Overview](1-overview)  
+1. [Overview](#1-overview)  
 2. [Release Notes](#2-release-notes)  
  2.1 [Datasets](#21-datasets)  
  2.2 [Models](#22-models)  
