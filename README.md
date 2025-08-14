@@ -42,6 +42,7 @@
 5. [License and Use](#5-license-and-use)  
 6. [Model and Hardware Safety](#6-model-and-hardware-safety)  
 7. [Citation](#7-citation)  
+8. [Contacts](#8-contacts)
 
 ### Quick Links
 
@@ -142,3 +143,16 @@ MolmoAct can display a **visual trace** of its intended actions before execution
       primaryClass={cs.RO},
       url={https://arxiv.org/abs/2508.07917}
 }
+```
+
+---
+
+## 8. Contacts
+
+For questions, collaborations, or support, please contact with:
+
+```
+{haoquanf,jasonl,jiafeid}@allenai.org 
+```
+
+Found a bug or have a feature request? Please open a [GitHub issue](https://github.com/allenai/MolmoAct/issues).
