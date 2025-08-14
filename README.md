@@ -27,28 +27,38 @@
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Release Notes](#release-notes)
-  - [Datasets](#datasets)
-  - [Models](#models)
-- [License and Use](#license-and-use)
-- [Model and Hardware Safety](#model-and-hardware-safety)
-- [Citation](#citation)
+1. [Overview](#1-overview)  
+2. [Release Notes](#2-release-notes)  
+ 2.1 [Datasets](#21-datasets)  
+ 2.2 [Models](#22-models)  
+3. [Training (WIP)](#3-training-wip)  
+ 3.1 [Data Processing & Fine-tuning](#31-data-processing--fine-tuning)  
+ 3.2 [Pre-training](#32-pre-training)  
+ 3.3 [Mid-training](#33-mid-training)  
+4. [Evaluation (WIP)](#4-evaluation-wip)  
+ 4.1 [SimPLER Env](#41-simpler-env)  
+ 4.2 [LIBERO Evaluation](#42-libero-evaluation)  
+ 4.3 [Real-world Evaluation](#43-real-world-evaluation)  
+5. [License and Use](#5-license-and-use)  
+6. [Model and Hardware Safety](#6-model-and-hardware-safety)  
+7. [Citation](#7-citation)  
 
 ### Quick Links
 
 | Section | Link |
 |---|---|
-| Overview | [Go to Overview](#overview) |
-| Datasets | [Go to Datasets](#datasets) |
-| Models | [Go to Models](#models) |
-| License | [Go to License and Use](#license-and-use) |
-| Safety | [Go to Model and Hardware Safety](#model-and-hardware-safety) |
-| Citation | [Go to Citation](#citation) |
+| Overview | [#1-overview](#1-overview) |
+| Datasets | [#21-datasets](#21-datasets) |
+| Models | [#22-models](#22-models) |
+| Training | [#3-training-wip](#3-training-wip) |
+| Evaluation | [#4-evaluation-wip](#4-evaluation-wip) |
+| License | [#5-license-and-use](#5-license-and-use) |
+| Safety | [#6-model-and-hardware-safety](#6-model-and-hardware-safety) |
+| Citation | [#7-citation](#7-citation) |
 
 ---
 
-## Overview
+## 1. Overview
 
 MolmoAct is a repository for training and using AI2’s open-sourced **Action Reasoning Model** that can reason in space.
 
@@ -56,9 +66,9 @@ MolmoAct is a repository for training and using AI2’s open-sourced **Action Re
 
 ---
 
-## Release Notes
+## 2. Release Notes
 
-### Datasets
+### 2.1 Datasets
 
 - **[2025/08/12] 🔥 [Datasets](https://huggingface.co/collections/allenai/molmoact-data-mixture-6897e583e13b6c2cf3ea2b80)** used for our pre-training and mid-training have been released:
 
@@ -68,7 +78,7 @@ MolmoAct is a repository for training and using AI2’s open-sourced **Action Re
 | MolmoAct Pre-training Mixture      | Data mixture for MolmoAct pre-training. Contains a subset of OXE formulated as Action Reasoning data, auxiliary robot data, and web data.   | https://huggingface.co/datasets/allenai/MolmoAct-Pretraining-Mixture     |
 | MolmoAct Mid-training Mixture      | Data mixture for MolmoAct mid-training. Contains MolmoAct Dataset formulated as Action Reasoning data.                                      | https://huggingface.co/datasets/allenai/MolmoAct-Midtraining-Mixture     |
 
-### Models
+### 2.2 Models
 
 - **[2025/08/12] 🔥 [Models](https://huggingface.co/collections/allenai/molmoact-689697591a3936fba38174d7)** have been released:
 
@@ -79,24 +89,48 @@ MolmoAct is a repository for training and using AI2’s open-sourced **Action Re
 | MolmoAct-7B-D-Pretrain     | Inference    | Checkpoint to replicate zero-shot results on SimplerEnv (Google Robot).                                     | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812     |
 | MolmoAct-7B-D-Pretrain-RT-1| Inference    | Checkpoint to replicate RT-1 fine-tuned results on SimplerEnv (Google Robot).                               | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-RT-1-0812|
 
-All artifacts used in creating MolmoAct (data, training code, evaluations, intermediate checkpoints) will be made available later to further our commitment to open-source AI development and reproducibility. We will provide links to all artifacts in this repo after release.
+---
+
+## 3. Training (WIP)
+
+### 3.1 Data Processing & Fine-tuning
+_Content coming soon._
+
+### 3.2 Pre-training
+_Content coming soon._
+
+### 3.3 Mid-training
+_Content coming soon._
 
 ---
 
-## License and Use
+## 4. Evaluation (WIP)
+
+### 4.1 SimPLER Env
+_Content coming soon._
+
+### 4.2 LIBERO Evaluation
+_Content coming soon._
+
+### 4.3 Real-world Evaluation
+_Content coming soon._
+
+---
+
+## 5. License and Use
 
 MolmoAct is licensed under **Apache 2.0** and intended for research and educational use.  
 For more information, please see our [Responsible Use Guidelines](https://allenai.org/responsible-use).
 
 ---
 
-## Model and Hardware Safety
+## 6. Model and Hardware Safety
 
 MolmoAct can display a **visual trace** of its intended actions before execution, enabling proactive auditing and adjustment of behavior. The model’s action space is bounded within the data provided, and compliance is built in to limit excessive force when resistance is detected. Always follow hardware manufacturer guidelines and operate in a safely configured environment.
 
 ---
 
-## Citation
+## 7. Citation
 
 ```bibtex
 @misc{molmoact2025,
@@ -106,5 +140,5 @@ MolmoAct can display a **visual trace** of its intended actions before execution
       eprint={2508.07917},
       archivePrefix={arXiv},
       primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2508.07917}, 
+      url={https://arxiv.org/abs/2508.07917}
 }
