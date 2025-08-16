@@ -55,14 +55,16 @@
 
 | Section | Link |
 |---|---|
-| Overview | [#1-overview](#1-overview) |
-| Datasets | [#21-datasets](#21-datasets) |
-| Models | [#22-models](#22-models) |
-| Training | [#3-training-wip](#3-training-wip) |
-| Evaluation | [#4-evaluation-wip](#4-evaluation-wip) |
-| License | [#5-license-and-use](#5-license-and-use) |
-| Safety | [#6-model-and-hardware-safety](#6-model-and-hardware-safety) |
-| Citation | [#7-citation](#7-citation) |
+| Overview | [#1-Overview](#1-overview) |
+| Datasets | [#21-Datasets](#21-datasets) |
+| Models | [#22-Models](#22-models) |
+| Training | [#3-Training-WIP](#3-training-wip) |
+| Evaluation | [#4-Evaluation-WIP](#4-evaluation-wip) |
+| License | [#5-License-and-Use](#5-license-and-use) |
+| Safety | [#6-Model-and-Hardware-Safety](#6-model-and-hardware-safety) |
+| Citation | [#7-Citation](#7-citation) |
+| Contacts | [#8-Contacts](#8-contacts) |
+
 
 ---
 
