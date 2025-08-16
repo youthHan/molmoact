@@ -24,6 +24,13 @@
 </p>
 
 ---
+### Updates
+- **[2025/08/15]** 🔥 Code for MolmoAct Evaluation on SimplerEnv has been released at  **[allenai/SimplerEnv](https://github.com/allenai/SimplerEnv)**
+- **[2025/08/12] 🔥 [Datasets](https://huggingface.co/collections/allenai/molmoact-data-mixture-6897e583e13b6c2cf3ea2b80)** used for our pre-training and mid-training have been released
+- **[2025/08/12] 🔥 [Models](https://huggingface.co/collections/allenai/molmoact-689697591a3936fba38174d7)** have been released
+
+
+
 
 ## Table of Contents
 
@@ -36,7 +43,7 @@
  3.2 [Pre-training](#32-pre-training)  
  3.3 [Mid-training](#33-mid-training)  
 4. [Evaluation (WIP)](#4-evaluation-wip)  
- 4.1 [SimPLER Env](#41-simpler-env)  
+ 4.1 [SimplerEnv](#41-simpler-env)  
  4.2 [LIBERO Evaluation](#42-libero-evaluation)  
  4.3 [Real-world Evaluation](#43-real-world-evaluation)  
 5. [License and Use](#5-license-and-use)  
@@ -71,8 +78,6 @@ MolmoAct is a repository for training and using AI2’s open-sourced **Action Re
 
 ### 2.1 Datasets
 
-- **[2025/08/12] 🔥 [Datasets](https://huggingface.co/collections/allenai/molmoact-data-mixture-6897e583e13b6c2cf3ea2b80)** used for our pre-training and mid-training have been released:
-
 | Data                               | Description                                                                                                                                  | Dataset Path                                                             |
 |------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|
 | MolmoAct Dataset                   | MolmoAct dataset in LeRobot format. All contents were collected in-house by AI2.                                                            | https://huggingface.co/datasets/allenai/MolmoAct-Dataset                 |
@@ -80,8 +85,6 @@ MolmoAct is a repository for training and using AI2’s open-sourced **Action Re
 | MolmoAct Mid-training Mixture      | Data mixture for MolmoAct mid-training. Contains MolmoAct Dataset formulated as Action Reasoning data.                                      | https://huggingface.co/datasets/allenai/MolmoAct-Midtraining-Mixture     |
 
 ### 2.2 Models
-
-- **[2025/08/12] 🔥 [Models](https://huggingface.co/collections/allenai/molmoact-689697591a3936fba38174d7)** have been released:
 
 | Model                       | Use Case     | Description                                                                                                 | Checkpoint Path                                                |
 |----------------------------|--------------|-------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------|
@@ -107,8 +110,22 @@ _Content coming soon._
 
 ## 4. Evaluation (WIP)
 
-### 4.1 SimPLER Env
-_Content coming soon._
+### 4.1 Simpler-Env
+
+We release the SimplerEnv evaluation code for MolmoAct at [allenai/SimplerEnv](https://github.com/allenai/SimplerEnv). Please first install the dependencies for SimplerEnv Evaluation environment following [allenai/SimplerEnv](https://github.com/allenai/SimplerEnv) and dependencies for [MolmoAct Inference Setup](https://github.com/allenai/SimplerEnv?tab=readme-ov-file#molmoact-inference-setup). After installing all the dependencies, evaluation scripts are located at:
+
+
+```bash
+# under the project dir of SimplerEnv/
+bash scripts/molmoact_pick_coke_can_visual_matching.sh
+bash scripts/molmoact_pick_coke_can_variant_agg.sh
+bash scripts/molmoact_move_near_visual_matching.sh
+bash scripts/molmoact_move_near_variant_agg.sh
+bash scripts/molmoact_drawer_visual_matching.sh
+bash scripts/molmoact_drawer_variant_agg.sh
+```
+
+
 
 ### 4.2 LIBERO Evaluation
 _Content coming soon._
@@ -127,7 +144,7 @@ For more information, please see our [Responsible Use Guidelines](https://allena
 
 ## 6. Model and Hardware Safety
 
-MolmoAct can display a **visual trace** of its intended actions before execution, enabling proactive auditing and adjustment of behavior. The model’s action space is bounded within the data provided, and compliance is built in to limit excessive force when resistance is detected. Always follow hardware manufacturer guidelines and operate in a safely configured environment.
+MolmoAct can display a **visual reasoning trace** of its intended actions before execution, enabling proactive auditing and adjustment of behavior. The model’s action space is bounded within the data provided, and compliance is built in to limit excessive force when resistance is detected. Always follow hardware manufacturer guidelines and operate in a safely configured environment.
 
 ---
 
