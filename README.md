@@ -114,8 +114,7 @@ _Content coming soon._
 
 ### 4.1 Simpler-Env
 
-We release the SimplerEnv evaluation code for MolmoAct at [allenai/SimplerEnv](https://github.com/allenai/SimplerEnv). Please first install the dependencies for SimplerEnv Evaluation environment following [allenai/SimplerEnv](https://github.com/allenai/SimplerEnv) and dependencies for [MolmoAct Inference Setup](https://github.com/allenai/SimplerEnv?tab=readme-ov-file#molmoact-inference-setup). After installing all the dependencies, evaluation scripts are located at:
-
+We release the SimplerEnv evaluation code for MolmoAct at [allenai/SimplerEnv](https://github.com/allenai/SimplerEnv). Please first install the dependencies for SimplerEnv Evaluation environment following [allenai/SimplerEnv](https://github.com/allenai/SimplerEnv) and dependencies for [MolmoAct Inference Setup](https://github.com/allenai/SimplerEnv?tab=readme-ov-file#molmoact-inference-setup). After installing all the dependencies, use scripts under `scripts/molmoact_*` to start evaluation in the following way:
 
 ```bash
 # under the project dir of SimplerEnv/
@@ -127,6 +126,7 @@ bash scripts/molmoact_drawer_visual_matching.sh
 bash scripts/molmoact_drawer_variant_agg.sh
 ```
 
+These scripts also support vLLM inference. Enable it by simply appending the `--vllm` flag to each command, e.g., `bash scripts/molmoact_pick_coke_can_visual_matching.sh --vllm`. We ran all evaluations with vLLM and recommend it for its significantly faster inference throughput.
 
 
 ### 4.2 LIBERO Evaluation
