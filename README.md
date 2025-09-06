@@ -84,6 +84,7 @@ MolmoAct is a repository for training and using AI2’s open-sourced **Action Re
 | MolmoAct-7B-O              | Fine-tuning  | Most open MolmoAct; adapt to real robots by fine-tuning on your datasets.                                   | https://huggingface.co/allenai/MolmoAct-7B-O-0812              |
 | MolmoAct-7B-D-Pretrain     | Inference    | Checkpoint to replicate zero-shot results on SimplerEnv (Google Robot).                                     | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-0812     |
 | MolmoAct-7B-D-Pretrain-RT-1| Inference    | Checkpoint to replicate RT-1 fine-tuned results on SimplerEnv (Google Robot).                               | https://huggingface.co/allenai/MolmoAct-7B-D-Pretrain-RT-1-0812|
+| MolmoAct-7B-D-Captioner | Training Replication    | Checkpoint to replicate MolmoAct training from scratch.                               | https://huggingface.co/allenai/MolmoAct-7B-D-Captioner-0812|
 
 ---
 
