@@ -48,8 +48,7 @@
   4.2.3 [Post-training (LIBERO)](#423-post-training-libero)  
 5. [Evaluation (WIP)](#5-evaluation-wip)  
  5.1 [SimplerEnv](#51-simpler-env)  
- 5.2 [LIBERO Evaluation](#52-libero-evaluation)  
- 5.3 [Real-world Evaluation](#53-real-world-evaluation)  
+ 5.2 [LIBERO Evaluation (WIP)](#52-libero-evaluation)  
 6. [License and Use](#6-license-and-use)  
 7. [Model and Hardware Safety](#7-model-and-hardware-safety)  
 8. [Citation](#8-citation)  
@@ -317,10 +316,6 @@ bash scripts/molmoact_drawer_variant_agg.sh
 ### 5.2 LIBERO Evaluation
 _Content coming soon._
 
-### 5.3 Real-world Evaluation
-_Content coming soon._
-
----
 
 ## 6. License and Use
 
