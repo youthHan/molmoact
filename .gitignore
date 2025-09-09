@@ -67,7 +67,6 @@ core
 scripts.sh
 test.ipynb
 olmo.lock
-experiments
 eval*.yaml
 deploy
 *.html
