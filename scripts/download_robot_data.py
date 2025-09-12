@@ -3,11 +3,12 @@ import logging
 import time
 
 from olmo.data.robot_datasets import *
+from olmo.data.lvis_dataset import LVIS
 
 from olmo.util import prepare_cli_environment
 
 PRETRAIN_DATASETS = [
-    BC_Z, BridgeDataV2, RT_1, AuxiliaryDepthData, AuxiliaryTraceData
+    BC_Z, BridgeDataV2, RT_1, AuxiliaryDepthData, AuxiliaryTraceData, LVIS
 ]
 
 MIDTRAIN_DATASETS = [

@@ -37,29 +37,29 @@ log = logging.getLogger("train")
 
 AUX_EXCEPT_DOCS = [
     # Supervised datasets we want eval on
-    "coco_2014_vqa_multi",                                              # 82783
-    "text_vqa",                                                         # 34602
-    "okvqa",                                                            # 9009
-    "chart_qa_weighted",                                                # 28299
-    "doc_qa",                                                           # 39463
-    "info_qa",                                                          # 23946
-    "ai2_diagram_v2_mix_transparent",                                   # 15042
-    "a_okvqa_mc",                                                       # 17056
-    "a_okvqa_da",                                                       # 17056
-    "android_control",                                                  # 74714
+    "coco_2014_vqa_multi",
+    "text_vqa",
+    "okvqa",
+    "chart_qa_weighted",
+    "doc_qa",
+    "info_qa",
+    "ai2_diagram_v2_mix_transparent",
+    "a_okvqa_mc",
+    "a_okvqa_da",
+    "android_control",
 
     # Some other datasets we might want to eval on
-    "science_qa_img",                                                   # 6218
-    "tabwmp_da",                                                        # 23059
-    "st_qa",                                                            # 25050
-    "tally_qa",                                                         # 132981
+    "science_qa_img",
+    "tabwmp_da",
+    "st_qa",
+    "tally_qa",
 
-    # ("pixmo_clocks", 250000),  # Downsample since it is huge            # 250000
+    # ("pixmo_clocks", 250000),  # Downsample since it is huge
 
     # Other synthetic data, also downsampled since they are huge
-    ("dv_qa", 10000),                                                   # 10000
-    ("figure_qa", 10000),                                               # 10000
-    ("plot_qa", 20000),                                                 # 20000
+    ("dv_qa", 10000),
+    ("figure_qa", 10000),
+    ("plot_qa", 20000),
 ]
 
 
@@ -192,14 +192,14 @@ if __name__ == "__main__":
     elif args.mixture in ["3.2-synthetic"]:
         aux = list(AUX)
         eval_tasks = [
-            # "chart_qa",
-            # "info_qa",
-            # "doc_qa",
-            # "ai2_diagram_v2_mix_transparent",
-            # "coco_2014_vqa_multi",
-            # "pixmo_clocks",
-            # "android_control_ll",
-            # "pointing_eval:test",
+            "chart_qa",
+            "info_qa",
+            "doc_qa",
+            "ai2_diagram_v2_mix_transparent",
+            "coco_2014_vqa_multi",
+            "pixmo_clocks",
+            "android_control_ll",
+            "pointing_eval:test",
         ]
         tasks = [
             ["demo", [
@@ -229,12 +229,11 @@ if __name__ == "__main__":
             ["pointing", [
                 "pixmo_points_train",
                 "pixmo_count_train",
-                "pixmo_points_high_freq_train",        # 202518
+                "pixmo_points_high_freq_train",
             ], 0.05 * 0.35],
-            # ["bbox", [
-            #     "/path/to/robopoint_lvis.json",
-            #     # "/weka/oe-training-default/jiafeid/MolmoAct/data/molmo-e/robopoint_lvis.json",
-            # ], 0.05 * 0.1],
+            ["bbox", [
+                "lvis",
+            ], 0.05 * 0.1],
 
             # auxiliary depth/trace data
             ["auxiliary", [
@@ -295,12 +294,6 @@ if __name__ == "__main__":
         tasks = [
             ["libero_long", [
                 "libero_long",
-            ], 1.0],
-        ]
-    elif args.mixture in ["robot-test"]:
-        tasks = [
-            ["test", [
-                "auxiliary_trace_data",
             ], 1.0],
         ]
     else:
