@@ -208,9 +208,18 @@ def clip_grad_norm(parameters, max_grad_norm: float, norm_type: float = 2.0, for
     # Adapted from https://github.com/pytorch/torchtitan/blob/2a4437014e66bcf88a3f0419b816266e6326d539/torchtitan/utils.py#L348
 
     grads = [p.grad for p in parameters if p.grad is not None]
-    total_norm = nn.utils.get_total_norm(
-        grads, norm_type=norm_type, error_if_nonfinite=False, foreach=foreach
-    )
+    try:
+        total_norm = nn.utils.get_total_norm(
+            grads, norm_type=norm_type, error_if_nonfinite=False, foreach=foreach
+        )
+    except:
+        # Compute total norm WITHOUT clipping by using +inf
+        total_norm = torch.nn.utils.clip_grad_norm_(
+            parameters,
+            float("inf"),
+            norm_type=norm_type,
+            foreach=foreach,
+            )
     # If total_norm is a DTensor, the placements must be `torch.distributed._tensor.ops.math_ops._NormPartial`.
     # We can simply reduce the DTensor to get the total norm in this tensor's process group
     # and then convert it to a local tensor.
@@ -223,4 +232,5 @@ def clip_grad_norm(parameters, max_grad_norm: float, norm_type: float = 2.0, for
         total_norm = total_norm.full_tensor()
 
     torch.nn.utils.clip_grads_with_norm_(parameters, max_grad_norm, total_norm, foreach=foreach)
+    
     return total_norm

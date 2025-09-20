@@ -19,8 +19,16 @@ from olmo.nn.llm import AttentionType, ActivationType
 from olmo.torch_util import get_global_rank
 from olmo.util import resource_path
 
-from torch.distributed.fsdp import fully_shard
+
+# from torch.distributed.fsdp import fully_shard
+# from torch.distributed._composable.fsdp import fully_shard
+try:
+    from torch.distributed.fsdp import fully_shard  # type: ignore[attr-defined]
+except Exception:
+    from torch.distributed._composable.fsdp import fully_shard  # type: ignore
+
 import torch.distributed.checkpoint.state_dict as dist_cp_sd
+from torch.nn.attention import sdpa_kernel, SDPBackend
 
 log = logging.getLogger(__name__)
 
@@ -212,14 +220,25 @@ class ViTMultiHeadDotProductAttention(nn.Module):
             attn_output = torch.einsum("...hqk,...khd->...qhd", attn_weights.to(xv.dtype), xv)
 
         elif self.config.attention_type == AttentionType.sdpa:
-            attn_output = F.scaled_dot_product_attention(
-                xq.transpose(1, 2).contiguous(),
-                xk.transpose(1, 2).contiguous(),
-                xv.transpose(1, 2).contiguous(),
-                attn_mask=attn_mask,
-                is_causal=False,
-                dropout_p=self.config.attention_dropout
-            ).transpose(1, 2)
+            # with sdpa_kernel(SDPBackend.EFFIFIENT_ATTENTION):
+            # Re-enable all SDPA engines globally
+            # if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+            #     torch.backends.cuda.enable_flash_sdp(False)
+            # if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
+            #     torch.backends.cuda.enable_mem_efficient_sdp(True)
+            if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+                torch.backends.cuda.enable_cudnn_sdp(True)
+            # Also allow TF32 for a tiny speed bump on H100:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=True, enable_cudnn=True):
+                attn_output = F.scaled_dot_product_attention(
+                    xq.transpose(1, 2).contiguous(),
+                    xk.transpose(1, 2).contiguous(),
+                    xv.transpose(1, 2).contiguous(),
+                    attn_mask=attn_mask,
+                    is_causal=False,
+                    dropout_p=self.config.attention_dropout
+                ).transpose(1, 2)
         else:
             raise NotImplementedError(self.config.attention_type)
         attn_output = attn_output.to(og_dtype)

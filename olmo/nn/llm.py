@@ -30,7 +30,12 @@ from olmo.tokenizer import TokenizerConfig, get_resized_module
 from olmo.torch_util import ensure_finite_, BufferCache, get_global_rank, barrier, synchronize_value
 from olmo.util import resource_path, rank0_resource_path, split_into_groups
 
-from torch.distributed.fsdp import fully_shard
+# from torch.distributed.fsdp import fully_shard
+# from torch.distributed._composable.fsdp import fully_shard
+try:
+    from torch.distributed.fsdp import fully_shard  # type: ignore[attr-defined]
+except Exception:
+    from torch.distributed._composable.fsdp import fully_shard  # type: ignore
 
 
 log = logging.getLogger(__name__)

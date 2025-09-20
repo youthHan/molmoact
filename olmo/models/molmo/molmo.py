@@ -30,7 +30,13 @@ from olmo.models.model_config import BaseModelConfig
 from olmo.nn.vision_backbone import MolmoVisionBackbone, MolmoVisionBackboneConfig
 from olmo.tokenizer import get_special_token_ids
 from olmo.torch_util import BufferCache, get_default_device
-from torch.distributed.fsdp import fully_shard
+
+# from torch.distributed.fsdp import fully_shard
+# from torch.distributed._composable.fsdp import fully_shard
+try:
+    from torch.distributed.fsdp import fully_shard  # type: ignore[attr-defined]
+except Exception:
+    from torch.distributed._composable.fsdp import fully_shard  # type: ignore
 
 
 log = logging.getLogger(__name__)
@@ -424,6 +430,7 @@ class Molmo(ModelBase):
         x = self.transformer.wte(input_ids) if input_embeddings is None else input_embeddings  # type: ignore
 
         num_image: Optional[int] = None
+        # with torch.no_grad():
         if images is not None:
             image_features = self.vision_backbone(images, image_masks, pooled_patches_idx)
             is_image_patch = input_ids.view(-1) == self._image_patch_id
