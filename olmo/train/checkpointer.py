@@ -338,7 +338,7 @@ class Checkpointer:
         # NOTE: if 'dir' is a URL, the 'wd' will be a different temp dir for each rank.
         if is_url(dir) or get_fs_local_rank() == 0:
             train_dir.mkdir(exist_ok=True, parents=True)
-        wait_for(train_dir.exists, description=f"Waiting for '{train_dir}' to be created...")
+        wait_for(train_dir.exists, description=f"Waiting for '{train_dir}' to be created...", timeout=120.0)
         torch.save(train_state, train_dir / f"rank{get_global_rank()}.pt")
 
     def _get_tmp_dir(self, dir: PathOrStr) -> Path:
@@ -356,7 +356,7 @@ class Checkpointer:
         # creating the temp directory from rank 0 might not be immediately
         # realized in the file systems of the other ranks.
         # So we wait here across all ranks until that tmp checkpoint directory is visible.
-        wait_for(lambda: tmp_dir.exists(), "Waiting for checkpoint directory", timeout=10.0)
+        wait_for(lambda: tmp_dir.exists(), "Waiting for checkpoint directory", timeout=120.0)
         barrier()
         return tmp_dir
 
@@ -376,7 +376,7 @@ class Checkpointer:
                 Path(dir).mkdir(exist_ok=True, parents=True)
             # Ensure the dir exists for all ranks before continuing. This might take a second if we're
             # saving to an NFS drive or something like that.
-            wait_for(Path(dir).exists, description=f"Waiting on '{dir}' to be created...")
+            wait_for(Path(dir).exists, description=f"Waiting on '{dir}' to be created...", timeout=120.0)
 
         barrier()
         return dir
@@ -399,7 +399,7 @@ class Checkpointer:
             # replacing the temp directory with the final directory from rank 0 might not be immediately
             # realized in the file systems of the other ranks.
             # So we wait here across all ranks until that final checkpoint directory is visible.
-            wait_for(lambda: Path(dir).exists(), "Waiting for checkpoint directory", timeout=10.0)
+            wait_for(lambda: Path(dir).exists(), "Waiting for checkpoint directory", timeout=120.0)
         else:
             # NOTE: each rank will have its own tmp dir
             # Upload files to final location.

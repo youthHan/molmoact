@@ -598,7 +598,7 @@ def _prepare_env_for_save(
             Path(dir).mkdir(exist_ok=True, parents=True)
         # Ensure the dir exists for all ranks before continuing. This might take a second if we're
         # saving to an NFS drive or something like that.
-        wait_for(Path(dir).exists, description=f"Waiting on '{dir}' to be created...")
+        wait_for(Path(dir).exists, description=f"Waiting on '{dir}' to be created...", timeout=120)
         barrier()
 
     return dir
