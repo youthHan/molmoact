@@ -415,6 +415,39 @@ def run_trainer(cfg: TrainConfig) -> None:
 
                 log.info("Adding LoRA adapters...")
                 trainer.fsdp_model = get_peft_model(fsdp_model, lora_config)
+                # Freeze parameters depending on what we are tuning
+                if not cfg.ft_connector:
+                    log.info(f"Freezing connector")
+                    for param in trainer.fsdp_model.get_connector_parameters():
+                        param.requires_grad = False
+                if not cfg.ft_vit:
+                    log.info(f"Freezing vision backbone")
+                    for param in trainer.fsdp_model.get_vit_parameters():
+                        param.requires_grad = False
+                if not cfg.ft_llm:
+                    log.info(f"Freezing LLM")
+                    for param in trainer.fsdp_model.get_llm_parameters():
+                        param.requires_grad = False
+                elif cfg.ft_embedding != "all":
+                    freeze_wte, freeze_out, freeze_ln_f = True, True, True
+                    if cfg.ft_embedding == "ln_f":
+                        freeze_ln_f = False
+                    elif cfg.ft_embedding == "lm_head":
+                        freeze_ln_f = False
+                        freeze_out = False
+                    elif cfg.ft_embedding == "wte":
+                        freeze_wte = False
+                    else:
+                        raise NotImplementedError(cfg.fsdp)
+                    if freeze_ln_f:
+                        log.info(f"Freezing LLM: ln_f")
+                        freeze_module(trainer.fsdp_model.transformer.ln_f)
+                    if freeze_out and hasattr(olmo_model.transformer, "ff_out"):
+                        log.info(f"Freezing LLM: ff_out")
+                        freeze_module(trainer.fsdp_model.transformer.ff_out)
+                    if freeze_wte:
+                        log.info(f"Freezing LLM: wte")
+                        trainer.fsdp_model.transformer.wte.embedding.requires_grad = False
 
 
                 def _sync_grad(grad):
