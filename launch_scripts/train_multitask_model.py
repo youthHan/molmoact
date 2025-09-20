@@ -34,6 +34,13 @@ from huggingface_hub.utils import build_hf_headers
 
 log = logging.getLogger("train")
 
+import torch
+# cudnn & matmul 的 TF32 可以开/关都测一下（先开，稳定性更好）
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+# 触发 autograd 异常定位（只在调试时开）
+torch.autograd.set_detect_anomaly(True)
 
 AUX_EXCEPT_DOCS = [
     # Supervised datasets we want eval on
@@ -157,8 +164,16 @@ if __name__ == "__main__":
     parser.add_argument("--save_final_unsharded_checkpoint", action='store_true')
     parser.add_argument("--save_every_n_epoch", default=None, type=float)
 
-    
-    
+    parser.add_argument("--no-fsdp2", dest="fsdp2", action="store_false", help="Disable FSDP2")
+    parser.add_argument("--no-ft-connector", dest="ft_connector", action="store_false", help="Disable ft connector")
+    parser.add_argument("--no-ft-vit", dest="ft_vit", action="store_false", help="Disable ft vit")
+    parser.add_argument("--no-ft-llm", dest="ft_llm", action="store_false", help="Disable ft llm")
+    parser.add_argument("--no-activation-checkpointing", dest="activation_checkpointing", action="store_false", help="Enable activation checkpointing")
+    parser.set_defaults(fsdp2=True)
+    parser.set_defaults(ft_connector=True)
+    parser.set_defaults(ft_vit=True)
+    parser.set_defaults(ft_llm=True)
+    parser.set_defaults(activation_checkpointing=True)
 
     args, other_args = parser.parse_known_args()
 
@@ -267,6 +282,22 @@ if __name__ == "__main__":
             ], 1.0],
             ["molmoact_dataset_tabletop_secondary", [
                 "molmoact_dataset_tabletop_secondary",
+            ], 1.0],
+        ]
+    elif args.mixture in ["libero-all"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_spatial", [
+                "libero_spatial",
+            ], 1.0],
+            ["libero_object", [
+                "libero_object",
+            ], 1.0],
+            ["libero_goal", [
+                "libero_goal",
+            ], 1.0],
+            ["libero_long", [
+                "libero_long",
             ], 1.0],
         ]
     elif args.mixture in ["libero-spatial"]:
@@ -385,7 +416,7 @@ if __name__ == "__main__":
         submixture = get_training_mixture(submixture)
         root_size_mixture.append(RootSizeMixture(rate, submixture))
 
-    num_workers = 0
+    num_workers = 16
     evaluations = []
     if not args.turn_off_inference:
         for task in eval_tasks:
@@ -450,9 +481,9 @@ if __name__ == "__main__":
             pin_memory=args.pin_memory, # set false to avoid OOM for large dataset
             seed=50189,
         ),
-        ft_connector=True,
-        ft_llm=True,
-        ft_vit=True,
+        ft_connector=args.ft_connector,
+        ft_llm=args.ft_llm,
+        ft_vit=args.ft_vit,
         ft_embedding=args.ft_embedding,
         optimizer=OptimizerConfig(
             name=OptimizerType.adamw,
@@ -480,7 +511,8 @@ if __name__ == "__main__":
         fsdp=FSDPConfig(
             use_orig_params=True,
             wrapping_strategy=FSDPWrapStrategy.by_block_and_size,
-            precision=FSDPPrecision.float
+            precision=FSDPPrecision.float,
+            fsdp2=args.fsdp2
         ),
         load_path=None,
         initial_model_checkpoint=checkpoint,
@@ -506,7 +538,8 @@ if __name__ == "__main__":
         save_final_unsharded_checkpoint=args.save_final_unsharded_checkpoint,
         save_every_n_epoch=args.save_every_n_epoch,
         save_interval_epoch=0,
-        evaluators=evaluations_loss
+        evaluators=evaluations_loss,
+        activation_checkpointing=args.activation_checkpointing
     )
 
     conf = OmegaConf.create(cfg)
