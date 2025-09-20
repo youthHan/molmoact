@@ -18,6 +18,7 @@ import itertools
 import os
 
 from olmo.data.robot_datasets import *
+from olmo.data.lvis_dataset import LVIS
 
 
 def get_dataset_by_name(dataset_name, split) -> Dataset:
@@ -205,6 +206,8 @@ def get_dataset_by_name(dataset_name, split) -> Dataset:
         return AuxiliaryDepthData(split="train", style="demo")
     if "auxiliary_trace_data" in dataset_name:
         return AuxiliaryTraceData(split="train", style="demo")
+    if "lvis" in dataset_name:
+        return LVIS(split="train", style="demo")
     
     # mid-training
     if "molmoact_dataset_home_primary" in dataset_name:
