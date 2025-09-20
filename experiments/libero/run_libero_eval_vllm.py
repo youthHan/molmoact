@@ -160,16 +160,16 @@ def step(img, wrist_img, language_instruction, model, processor, sampling_params
     outputs = model.generate(inputs, sampling_params=sampling_params)
     generated_text = outputs[0].outputs[0].text
     # print the generated text
-    print(f"generated text: {generated_text}")
+    # print(f"generated text: {generated_text}")
 
     depth = parser.parse_depth(generated_text)
-    print(f"Depth: {depth}")
+    # print(f"Depth: {depth}")
 
     trace = parser.parse_trace(generated_text)
-    print(f"Trace: {trace}")
+    # print(f"Trace: {trace}")
 
     action = parser.parse_action(generated_text, unnorm_key=unnorm_key)
-    print(f"Action: {action}")
+    # print(f"Action: {action}")
 
 
     if (
@@ -299,10 +299,10 @@ def eval_libero(args, processor, model, sampling_params, parser, task_suite_name
                     try:
                         visualize_annotated = np.array(visualize.copy())
                         if traj is not None:
-                            for i in range(len(traj) - 1):
-                                p1 = tuple(map(int, traj[i]))
-                                p2 = tuple(map(int, traj[i + 1]))
-                                cv2.line(visualize_annotated, p1, p2, (0, 255, 255), 2, cv2.LINE_AA)
+                            for i in range(len(traj[0]) - 1):
+                                p1 = tuple(map(int, traj[0][i]))
+                                p2 = tuple(map(int, traj[0][i + 1]))
+                                cv2.line(visualize_annotated, p1, p2, (0, 255, 255), 1, cv2.LINE_AA)
                     except Exception as e:
                         print(f"step() trajectory annotation failed, returning unannotated image: {e}")
                         visualize_annotated = np.array(visualize)
@@ -376,7 +376,7 @@ def main():
     model = LLM(
         model=ckpt,
         trust_remote_code=True,
-        tensor_parallel_size=torch.cuda.device_count(),
+        tensor_parallel_size=4,#torch.cuda.device_count(),
         gpu_memory_utilization=0.95,
         dtype="bfloat16",
     )
