@@ -2,6 +2,8 @@ import argparse
 from collections import defaultdict
 import numpy as np
 import cv2
+import contextlib
+import io
 from PIL import Image
 import torch
 from libero_utils import (
@@ -22,6 +24,8 @@ from libero.libero import benchmark
 from transformers import AutoProcessor
 import math
 from vllm import LLM, ModelRegistry
+from vllm.lora.request import LoRARequest
+from vllm.config import LoRAConfig
 from vllm.model_executor.models.registry import _MULTIMODAL_MODELS
 from vllm.sampling_params import SamplingParams
 from molmoact import MolmoActForActionReasoning, MolmoActParser
@@ -109,7 +113,7 @@ def scale_pt(self, pt, w, h):
             int(round(y / 255.0 * (h - 1))))
     
 
-def step(img, wrist_img, language_instruction, model, processor, sampling_params, parser, unnorm_key):
+def step(img, wrist_img, language_instruction, model, processor, sampling_params, parser, unnorm_key, lora_request=None):
     """
     Run the multimodal model to get a text, parse out the 8×7 action matrix,
     unnormalize, then temporally aggregate the first 6 DOFs (dims 0–5) while using
@@ -157,7 +161,8 @@ def step(img, wrist_img, language_instruction, model, processor, sampling_params
         },
     ]
 
-    outputs = model.generate(inputs, sampling_params=sampling_params)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        outputs = model.generate(inputs, sampling_params=sampling_params, lora_request=lora_request)
     generated_text = outputs[0].outputs[0].text
     # print the generated text
     # print(f"generated text: {generated_text}")
@@ -187,7 +192,7 @@ def step(img, wrist_img, language_instruction, model, processor, sampling_params
 
 
 # @draccus.wrap()
-def eval_libero(args, processor, model, sampling_params, parser, task_suite_name, checkpoint, seed, model_family, num_trials_per_task, num_steps_wait) -> None:
+def eval_libero(args, processor, model, sampling_params, parser, task_suite_name, checkpoint, seed, model_family, num_trials_per_task, num_steps_wait, lora_request=None, lora="") -> None:
 
     set_seed_everywhere(seed)
 
@@ -252,6 +257,7 @@ def eval_libero(args, processor, model, sampling_params, parser, task_suite_name
             elif task_suite_name == "libero_90":
                 max_steps = 400  # longest training demo has 373 steps
                 print(f"Max steps: {max_steps}")
+            unnorm_key = "molmoact"
 
             print(f"Starting episode {task_episodes+1}...")
    
@@ -271,9 +277,9 @@ def eval_libero(args, processor, model, sampling_params, parser, task_suite_name
                 wrist_img = get_libero_wrist_image(obs, resize_size)
                 wait = False
                 try:
-                    action_matrix, annotated_image, traj = step(img, wrist_img, task_description, model, processor, sampling_params, parser, unnorm_key)
+                    action_matrix, annotated_image, traj = step(img, wrist_img, task_description, model, processor, sampling_params, parser, unnorm_key, lora_request)
                 except Exception as e:
-                    print(e)
+                    # print(e)
                     action_matrix = np.zeros((1, 7), dtype=float)
                     action_matrix[:, -1] = last_gripper_state
                     annotated_image = img
@@ -317,11 +323,11 @@ def eval_libero(args, processor, model, sampling_params, parser, task_suite_name
                 
                 # 4) Advance your loop counters
                 timestep += 1
-                print(f"wait: {wait}")
+                # print(f"wait: {wait}")
                 if wait:
                     action_num = 1
                     
-                print(f"action num: {action_num}")
+                # print(f"action num: {action_num}")
                 t += action_num
 
 
@@ -336,7 +342,7 @@ def eval_libero(args, processor, model, sampling_params, parser, task_suite_name
 
             # Save a replay video of the episode
             save_rollout_video(
-                replay_images, total_episodes, success=done, task_description=task_description, checkpoint=checkpoint, task=task_suite_name
+                replay_images, total_episodes, success=done, task_description=task_description, checkpoint=checkpoint, task=task_suite_name, lora=lora
             )
 
             print(f"Success: {done}")
@@ -354,6 +360,7 @@ def parse_args():
     p.add_argument("--task_id",  type=int, required=False, default=None, 
                    help="Specific task ID (0-9). If not provided, will run all task IDs 0-9 for the specified task type.")
     p.add_argument("--checkpoint", type=str, required=True)
+    p.add_argument("--lora-path", type=str, required=False, default="")
     return p.parse_args()
 
 def main():
@@ -373,29 +380,39 @@ def main():
         padding_side="left",
     )
 
-    model = LLM(
-        model=ckpt,
-        trust_remote_code=True,
-        tensor_parallel_size=4,#torch.cuda.device_count(),
-        gpu_memory_utilization=0.95,
-        dtype="bfloat16",
-    )
+    if args.lora_path == "":
+        lora_request = None
+        lora = ""
+    else:
+        lora_request = LoRARequest(lora_name="adapter", lora_int_id=1, lora_path=args.lora_path)
+        lora = f"{args.lora_path.split('/')[-2][:10]}-s{args.lora_path.split('/')[-1].split('-')[0][4:]}"
 
     sampling_params = SamplingParams(
         max_tokens=512,
         temperature=0
     )
 
+    model = LLM(
+        model=ckpt,
+        trust_remote_code=True,
+        tensor_parallel_size=4,#torch.cuda.device_count(),
+        gpu_memory_utilization=0.65,
+        dtype="bfloat16",
+        enable_lora=lora_request is not None,
+        max_loras=1,        # number of concurrent adapters you’ll use
+        max_lora_rank=32,   # anything >= 32 works
+    )
+
     parser = MolmoActParser.from_pretrained(ckpt)
 
 
     model_family = ckpt.replace("/", "-")
-    num_trials_per_task = 50
+    num_trials_per_task = 10
     num_steps_wait = 10  
     
     if args.task_id is not None:
         print(f"Running single task ID: {args.task_id}")
-        eval_libero(args, processor, model, sampling_params, parser, task_suite_name, ckpt, seed, model_family, num_trials_per_task, num_steps_wait)
+        eval_libero(args, processor, model, sampling_params, parser, task_suite_name, ckpt, seed, model_family, num_trials_per_task, num_steps_wait, lora_request,lora)
     else:
         # Run all task IDs 0-9 for the specified task type
         print(f"Running all task IDs 0-9 for task type: {args.task}")
@@ -404,7 +421,7 @@ def main():
             print(f"Running task ID: {task_id}")
             print(f"{'='*50}")
             args.task_id = task_id
-            eval_libero(args, processor, model, sampling_params, parser, task_suite_name, ckpt, seed, model_family, num_trials_per_task, num_steps_wait)
+            eval_libero(args, processor, model, sampling_params, parser, task_suite_name, ckpt, seed, model_family, num_trials_per_task, num_steps_wait, lora_request, lora)
 
 if __name__ == "__main__":
     main()
