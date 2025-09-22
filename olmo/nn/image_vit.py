@@ -230,7 +230,7 @@ class ViTMultiHeadDotProductAttention(nn.Module):
                 torch.backends.cuda.enable_cudnn_sdp(True)
             # Also allow TF32 for a tiny speed bump on H100:
             torch.backends.cuda.matmul.allow_tf32 = True
-            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=True, enable_cudnn=True):
+            with torch.backends.cuda.sdp_kernel(enable_flash=bool(int(os.environ.get("FLASH_VIS", 1))), enable_mem_efficient=True, enable_math=True, enable_cudnn=True):
                 attn_output = F.scaled_dot_product_attention(
                     xq.transpose(1, 2).contiguous(),
                     xk.transpose(1, 2).contiguous(),
