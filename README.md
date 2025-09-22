@@ -46,9 +46,10 @@
   4.2.1 [Pre-training](#421-pre-training)  
   4.2.2 [Mid-training](#422-mid-training)  
   4.2.3 [Post-training (LIBERO)](#423-post-training-libero)  
-5. [Evaluation](#5-evaluation-wip)  
- 5.1 [SimplerEnv](#51-simpler-env)  
- 5.2 [LIBERO](#52-libero)  
+5. [Evaluation](#5-evaluation-wip)
+5.1 [SimplerEnv](#51-simpler-env)
+5.2 [LIBERO](#52-libero)
+5.3 [MolmoAct Gradio Portal](#53-molmoact-gradio-portal)
 6. [License and Use](#6-license-and-use)  
 7. [Model and Hardware Safety](#7-model-and-hardware-safety)  
 8. [Citation](#8-citation)  
@@ -338,8 +339,16 @@ python run_libero_eval.py --task goal --checkpoint allenai/MolmoAct-7B-D-LIBERO-
 python run_libero_eval.py --task 10 --checkpoint allenai/MolmoAct-7B-D-LIBERO-Long-0812
 ```
 
+### 5.3 MolmoAct Gradio Portal
 
+Launch the interactive portal to explore MolmoAct predictions on your own images.
 
+```bash
+pip install gradio  # or pip install -e .[serve]
+python scripts/gradio_portal.py --checkpoint <hf_repo_or_local_path>
+```
+
+Add `--device cuda` (default when available) to run on GPU or `--device cpu` to stay on CPU. The UI allows up to the number of images defined by the checkpoint (commonly two views) and visualizes the generated depth strings, trajectory traces, and parsed actions alongside the conversation history.
 
 ## 6. License and Use
 
