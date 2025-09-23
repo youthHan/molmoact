@@ -392,18 +392,18 @@ class MolmoVisionBackbone(nn.Module):
             else:
                 pooled_features = to_pool
 
-                pooled_features = pooled_features.reshape([batch_size, -1, pooled_features.shape[-1]])
+            pooled_features = pooled_features.reshape([batch_size, -1, pooled_features.shape[-1]])
 
-                # MLP layer to map the feature.
-                if cfg.image_projector == ImageProjectType.mlpx2:
-                    for module in self.image_projector:
-                        pooled_features = module(pooled_features)
-                else:
-                    pooled_features = self.image_projector(pooled_features)
-                all_pooled_features.append((pooled_features, valid_token))
-
-            if multiple_pooling:
-                return all_pooled_features
+            # MLP layer to map the feature.
+            if cfg.image_projector == ImageProjectType.mlpx2:
+                for module in self.image_projector:
+                    pooled_features = module(pooled_features)
             else:
-                image_features, valid_token = all_pooled_features[0]
-                return image_features.view(-1, image_features.shape[-1])[valid_token.flatten()]
+                pooled_features = self.image_projector(pooled_features)
+            all_pooled_features.append((pooled_features, valid_token))
+
+        if multiple_pooling:
+            return all_pooled_features
+        else:
+            image_features, valid_token = all_pooled_features[0]
+            return image_features.view(-1, image_features.shape[-1])[valid_token.flatten()]
