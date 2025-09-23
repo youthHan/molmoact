@@ -393,9 +393,16 @@ class ViTMultiHeadDotProductAttention(nn.Module):
             if not torch.is_autocast_enabled():
                 xv = xv.to(torch.float)
 
+            flash_ok = (
+                attn_mask is None
+                and xq.dtype in (torch.float16, torch.bfloat16)
+                and xk.dtype == xq.dtype
+                and xv.dtype == xq.dtype
+            )
+
             sdp_ctx = (
                 torch.backends.cuda.sdp_kernel(
-                    enable_flash=False,
+                    enable_flash=flash_ok,
                     enable_mem_efficient=True,
                     enable_math=True,
                     enable_cudnn=True,

@@ -316,75 +316,81 @@ class MolmoVisionBackbone(nn.Module):
         image_features = self.encode_image(images)
 
         torch.backends.cuda.matmul.allow_tf32 = True
-        sdp_ctx = (
-            torch.backends.cuda.sdp_kernel(
-                enable_flash=False,
-                enable_mem_efficient=True,
-                enable_math=True,
-                enable_cudnn=True,
-            )
-            if hasattr(torch.backends.cuda, "sdp_kernel")
-            else nullcontext()
-        )
-        with sdp_ctx:
-            if cfg.image_padding_embed:
-                assert image_masks is not None
-                if cfg.image_padding_embed == "pad_embed":
-                    all_pad = (image_masks == 0).to(dtype=torch.float32)
-                    pad_embed = self.pad_embed[None, None, None, :]
-                    image_features = image_features + pad_embed * torch.unsqueeze(all_pad, -1)
-                elif cfg.image_padding_embed == "regress":
-                    pad_embed = self.pad_embed[None, None, None, :]
-                    image_features = image_features + pad_embed * torch.unsqueeze(torch.maximum(image_masks, torch.zeros_like(image_masks)), -1)
-                elif cfg.image_padding_embed == "pad_and_partial_pad":
-                    pad_embed = self.pad_embed[:, None, None, None, :]
-                    all_pad = image_masks == 0
-                    partial_pad = torch.logical_and(image_masks < 1, torch.logical_not(all_pad)).to(dtype=torch.float32)
-                    all_pad = all_pad.to(dtype=torch.float32)
-                    image_features = image_features + pad_embed[0] * torch.unsqueeze(all_pad, -1)
-                    image_features = image_features + pad_embed[1] * torch.unsqueeze(partial_pad, -1)
-                else:
-                    raise ValueError(cfg.image_padding_embed)
 
-            image_features = self.image_feature_dropout(image_features)
-            dim = image_features.shape[-1]
-
-            multiple_pooling = isinstance(pooled_patches_idx, (tuple, list))
-            if not multiple_pooling:
-                pooled_patches_idxs = [pooled_patches_idx]
+        if cfg.image_padding_embed:
+            assert image_masks is not None
+            if cfg.image_padding_embed == "pad_embed":
+                all_pad = (image_masks == 0).to(dtype=torch.float32)
+                pad_embed = self.pad_embed[None, None, None, :]
+                image_features = image_features + pad_embed * torch.unsqueeze(all_pad, -1)
+            elif cfg.image_padding_embed == "regress":
+                pad_embed = self.pad_embed[None, None, None, :]
+                image_features = image_features + pad_embed * torch.unsqueeze(torch.maximum(image_masks, torch.zeros_like(image_masks)), -1)
+            elif cfg.image_padding_embed == "pad_and_partial_pad":
+                pad_embed = self.pad_embed[:, None, None, None, :]
+                all_pad = image_masks == 0
+                partial_pad = torch.logical_and(image_masks < 1, torch.logical_not(all_pad)).to(dtype=torch.float32)
+                all_pad = all_pad.to(dtype=torch.float32)
+                image_features = image_features + pad_embed[0] * torch.unsqueeze(all_pad, -1)
+                image_features = image_features + pad_embed[1] * torch.unsqueeze(partial_pad, -1)
             else:
-                pooled_patches_idxs = pooled_patches_idx
+                raise ValueError(cfg.image_padding_embed)
 
-            all_pooled_features = []
-            for pooled_patches_idx in pooled_patches_idxs:
-                valid = pooled_patches_idx >= 0
-                valid_token = torch.any(valid, -1)
+        image_features = self.image_feature_dropout(image_features)
+        dim = image_features.shape[-1]
 
-                # Use `pooled_patches_idx` to arange the features for image pooling
-                batch_idx = torch.arange(pooled_patches_idx.shape[0], dtype=torch.long, device=pooled_patches_idx.device)
-                batch_idx = torch.tile(batch_idx.view(batch_size, 1, 1), [1, pooled_patches_idx.shape[1], pooled_patches_idx.shape[2]])
+        multiple_pooling = isinstance(pooled_patches_idx, (tuple, list))
+        if not multiple_pooling:
+            pooled_patches_idxs = [pooled_patches_idx]
+        else:
+            pooled_patches_idxs = pooled_patches_idx
 
-                # Now [batch, num_high_res_features, pool_dim, dim]
-                to_pool = image_features.reshape(batch_size, -1, dim)[batch_idx, torch.clip(pooled_patches_idx, 0)]
-                to_pool = to_pool * valid.float()[:, :, :, None]
-                to_pool = to_pool.reshape([-1, pooled_patches_idx.shape[-1], dim])
+        all_pooled_features = []
+        for pooled_patches_idx in pooled_patches_idxs:
+            valid = pooled_patches_idx >= 0
+            valid_token = torch.any(valid, -1)
+
+            # Use `pooled_patches_idx` to arange the features for image pooling
+            batch_idx = torch.arange(pooled_patches_idx.shape[0], dtype=torch.long, device=pooled_patches_idx.device)
+            batch_idx = torch.tile(batch_idx.view(batch_size, 1, 1), [1, pooled_patches_idx.shape[1], pooled_patches_idx.shape[2]])
+
+            # Now [batch, num_high_res_features, pool_dim, dim]
+            to_pool = image_features.reshape(batch_size, -1, dim)[batch_idx, torch.clip(pooled_patches_idx, 0)]
+            to_pool = to_pool * valid.float()[:, :, :, None]
+            to_pool = to_pool.reshape([-1, pooled_patches_idx.shape[-1], dim])
+            if self.config.pooling_attention_mask:
+                attn_mask = valid.reshape([-1, 1, 1, valid.shape[-1]])
+            else:
+                attn_mask = None
+
+            if hasattr(torch.backends.cuda, "sdp_kernel"):
+                allow_flash = (
+                    attn_mask is None
+                    and to_pool.dtype in (torch.float16, torch.bfloat16)
+                )
+                sdp_ctx = torch.backends.cuda.sdp_kernel(
+                    enable_flash=allow_flash,
+                    enable_mem_efficient=True,
+                    enable_math=True,
+                    enable_cudnn=True,
+                )
+            else:
+                sdp_ctx = nullcontext()
+
+            if cfg.image_pooling_2d in [ImagePooling2DType.attention_meanq, ImagePooling2DType.attention_meanq_2x, ImagePooling2DType.attention_meanq_4x]:
                 if self.config.pooling_attention_mask:
-                    attn_mask = valid.reshape([-1, 1, 1, valid.shape[-1]])
+                    denom = valid.view(-1, to_pool.shape[-2]).float().sum(-1)
+                    denom = torch.where(denom == 0, 1, denom)
+                    query = to_pool.sum(-2, keepdim=True) / denom[:, None, None]
                 else:
-                    attn_mask = None
-
-                if cfg.image_pooling_2d in [ImagePooling2DType.attention_meanq, ImagePooling2DType.attention_meanq_2x, ImagePooling2DType.attention_meanq_4x]:
-                    if self.config.pooling_attention_mask:
-                        denom = valid.view(-1, to_pool.shape[-2]).float().sum(-1)
-                        denom = torch.where(denom == 0, 1, denom)
-                        query = to_pool.sum(-2, keepdim=True) / denom[:, None, None]
-                    else:
-                        query = to_pool.mean(-2, keepdim=True)
+                    query = to_pool.mean(-2, keepdim=True)
+                with sdp_ctx:
                     pooled_features = self.image_pooling_2d(query, to_pool, attn_mask=attn_mask)
-                elif cfg.image_pooling_2d not in {ImagePooling2DType.none, ImagePooling2DType.stack}:
+            elif cfg.image_pooling_2d not in {ImagePooling2DType.none, ImagePooling2DType.stack}:
+                with sdp_ctx:
                     pooled_features = self.image_pooling_2d(to_pool[:, :1, :], to_pool, attn_mask=attn_mask)
-                else:
-                    pooled_features = to_pool
+            else:
+                pooled_features = to_pool
 
                 pooled_features = pooled_features.reshape([batch_size, -1, pooled_features.shape[-1]])
 
