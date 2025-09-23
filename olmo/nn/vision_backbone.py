@@ -7,6 +7,7 @@ from typing import Tuple, Optional
 import einops
 import torch
 from torch import nn
+from contextlib import nullcontext
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 
 from olmo.config import BaseConfig, D, StrEnum
@@ -315,7 +316,17 @@ class MolmoVisionBackbone(nn.Module):
         image_features = self.encode_image(images)
 
         torch.backends.cuda.matmul.allow_tf32 = True
-        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=True, enable_cudnn=True):
+        sdp_ctx = (
+            torch.backends.cuda.sdp_kernel(
+                enable_flash=False,
+                enable_mem_efficient=True,
+                enable_math=True,
+                enable_cudnn=True,
+            )
+            if hasattr(torch.backends.cuda, "sdp_kernel")
+            else nullcontext()
+        )
+        with sdp_ctx:
             if cfg.image_padding_embed:
                 assert image_masks is not None
                 if cfg.image_padding_embed == "pad_embed":

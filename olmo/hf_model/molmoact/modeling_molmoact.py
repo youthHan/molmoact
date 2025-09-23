@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple, Union, Dict, Any, Sequence, Callable
 import torch
 from torch import nn
 from torch.nn import functional as F
+from contextlib import nullcontext
 
 from transformers.models.auto import AutoModelForCausalLM, AutoModelForImageTextToText
 from transformers.activations import ACT2FN
@@ -372,6 +373,9 @@ class ViTMultiHeadDotProductAttention(nn.Module):
         if self.float32_attention:
             xq = xq.to(torch.float)
             xk = xk.to(torch.float)
+            xv = xv.to(torch.float)
+        elif self.attn_implementation == "sdpa" and not torch.is_autocast_enabled():
+            xv = xv.to(torch.float)
         
         dropout_p = 0.0 if not self.training else self.attention_dropout
         
@@ -388,15 +392,26 @@ class ViTMultiHeadDotProductAttention(nn.Module):
         elif self.attn_implementation == "sdpa":
             if not torch.is_autocast_enabled():
                 xv = xv.to(torch.float)
-        
-            attn_output = F.scaled_dot_product_attention(
-                xq.transpose(1, 2).contiguous(),
-                xk.transpose(1, 2).contiguous(),
-                xv.transpose(1, 2).contiguous(),
-                attn_mask=attn_mask,
-                is_causal=False,
-                dropout_p=dropout_p,
-            ).transpose(1, 2)
+
+            sdp_ctx = (
+                torch.backends.cuda.sdp_kernel(
+                    enable_flash=False,
+                    enable_mem_efficient=True,
+                    enable_math=True,
+                    enable_cudnn=True,
+                )
+                if hasattr(torch.backends.cuda, "sdp_kernel")
+                else nullcontext()
+            )
+            with sdp_ctx:
+                attn_output = F.scaled_dot_product_attention(
+                    xq.transpose(1, 2).contiguous(),
+                    xk.transpose(1, 2).contiguous(),
+                    xv.transpose(1, 2).contiguous(),
+                    attn_mask=attn_mask,
+                    is_causal=False,
+                    dropout_p=dropout_p,
+                ).transpose(1, 2)
         
         elif self.attn_implementation == "flash_attention_2":
             assert not self.config.float32_attention

@@ -8,6 +8,7 @@ from functools import partial
 from typing import Callable, List, Optional, Tuple
 
 import torch
+from contextlib import nullcontext
 import torch.backends.cuda
 import torch.nn as nn
 import torch.nn.functional as F
@@ -210,6 +211,10 @@ class ViTMultiHeadDotProductAttention(nn.Module):
         if self.config.float32_attention:
             xq = xq.to(torch.float)
             xk = xk.to(torch.float)
+            xv = xv.to(torch.float)
+        elif self.config.attention_type == AttentionType.sdpa and not torch.is_autocast_enabled():
+            # Ensure value tensor participates in the SDPA call with the same dtype
+            xv = xv.to(torch.float)
 
         if self.config.attention_type == AttentionType.direct:
             assert attn_mask is None
@@ -220,17 +225,20 @@ class ViTMultiHeadDotProductAttention(nn.Module):
             attn_output = torch.einsum("...hqk,...khd->...qhd", attn_weights.to(xv.dtype), xv)
 
         elif self.config.attention_type == AttentionType.sdpa:
-            # with sdpa_kernel(SDPBackend.EFFIFIENT_ATTENTION):
-            # Re-enable all SDPA engines globally
-            # if hasattr(torch.backends.cuda, "enable_flash_sdp"):
-            #     torch.backends.cuda.enable_flash_sdp(False)
-            # if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
-            #     torch.backends.cuda.enable_mem_efficient_sdp(True)
             if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
                 torch.backends.cuda.enable_cudnn_sdp(True)
-            # Also allow TF32 for a tiny speed bump on H100:
             torch.backends.cuda.matmul.allow_tf32 = True
-            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=True, enable_cudnn=True):
+            sdp_ctx = (
+                torch.backends.cuda.sdp_kernel(
+                    enable_flash=False,
+                    enable_mem_efficient=True,
+                    enable_math=True,
+                    enable_cudnn=True,
+                )
+                if hasattr(torch.backends.cuda, "sdp_kernel")
+                else nullcontext()
+            )
+            with sdp_ctx:
                 attn_output = F.scaled_dot_product_attention(
                     xq.transpose(1, 2).contiguous(),
                     xk.transpose(1, 2).contiguous(),
