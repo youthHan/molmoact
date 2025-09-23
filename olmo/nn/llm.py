@@ -1836,7 +1836,7 @@ class OLMoLlamaBlock(OLMoBlock):
         assert response_dropout_p == 0.0, "Response dropout is not supported in Llama."
 
         if self.config.float32_attention:
-            q, k = q.to(torch.float), k.to(torch.float)
+            q, k, v = q.to(torch.float), k.to(torch.float), v.to(torch.float)
 
         if self.config.attention_type == AttentionType.direct:
             attn_weights = torch.matmul(q, k.transpose(-2, -1)) / (q.shape[-1] ** 0.5)

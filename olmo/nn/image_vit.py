@@ -210,6 +210,10 @@ class ViTMultiHeadDotProductAttention(nn.Module):
         if self.config.float32_attention:
             xq = xq.to(torch.float)
             xk = xk.to(torch.float)
+            xv = xv.to(torch.float)
+        elif self.config.attention_type == AttentionType.sdpa and not torch.is_autocast_enabled():
+            # Ensure value tensor participates in the SDPA call with the same dtype
+            xv = xv.to(torch.float)
 
         if self.config.attention_type == AttentionType.direct:
             assert attn_mask is None
