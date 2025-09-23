@@ -372,6 +372,9 @@ class ViTMultiHeadDotProductAttention(nn.Module):
         if self.float32_attention:
             xq = xq.to(torch.float)
             xk = xk.to(torch.float)
+            xv = xv.to(torch.float)
+        elif self.attn_implementation == "sdpa" and not torch.is_autocast_enabled():
+            xv = xv.to(torch.float)
         
         dropout_p = 0.0 if not self.training else self.attention_dropout
         
