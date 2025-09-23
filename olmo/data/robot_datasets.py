@@ -14,6 +14,9 @@ Key points:
 
 import io
 import os
+import re
+import json
+import copy
 from os.path import exists, join
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -373,24 +376,74 @@ class _LIBEROHfBase(Dataset):
 
     def __len__(self): return len(self._inner)
 
-    def get(self, item, rng): return self._inner.get(item, rng)
+        # return dict(
+        #     style=self.style,
+        #     image=image_out,
+        #     question=conv["value"][0],
+        #     answers=conv["value"][1],
+        #     annotation=ex.get("annotation", None),
+        # )
+
+    def _is_number(self, token: str) -> bool:
+        try:
+            float(token)
+            return True
+        except ValueError:
+            return False
+
+    def _extract_action_tokens_from_conversation(self, text) -> List[str]:
+        """
+        The Parquet column `conversations` is a dict with keys:
+        - "from": ["human", "gpt", ...]
+        - "value": [user_prompt, assistant_reply, ...]
+        The action token list lives in the assistant reply (typically index 1).
+        """
+        ACTION_BLOCK_RE = re.compile(r"\[(?:[^][\n]|\"[^\"]*\"|'[^']*')+\]")
+        all_match_parts = []
+        # replies: List[str] = conversation["value"] # currently only single round
+        # Search the assistant responses from last to first in case of multi-turn
+        # for text in reversed(replies):
+        for match in ACTION_BLOCK_RE.finditer(text):
+            inner = match.group(0)[1:-1]
+            parts = [p.strip().strip('"').strip("'") for p in inner.split(",")]
+            if parts and not all(self._is_number(p) for p in parts):
+                all_match_parts.append([inner, parts])
+        return all_match_parts
+                
+    def get(self, item, rng): 
+        pre_data = self._inner.get(item, rng)
+        post_data = copy.deepcopy(pre_data)
+        all_tokens = self._extract_action_tokens_from_conversation(post_data["answers"])
+
+        new_answers = post_data["answers"]
+        for tokens_pair in all_tokens:
+            old_tokens = tokens_pair[0]
+            tokens = tokens_pair[1]
+            new_tokens = ", ".join(self.STATS_MAPPING[" ".join(tokens)])
+            new_answers = new_answers.replace(old_tokens, new_tokens)
+        post_data["answers"] = new_answers
+        return post_data
 
 
 # Concrete midtraining datasets (unchanged names)
 class LIBEROSpatial(_LIBEROHfBase):
     DATASET_NAME = "libero_spatial"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_spatial.json"))
 
 
 class LIBEROObject(_LIBEROHfBase):
     DATASET_NAME = "libero_object"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_object.json"))
 
 
 class LIBEROGoal(_LIBEROHfBase):
     DATASET_NAME = "libero_goal"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_goal.json"))
 
 
 class LIBEROLong(_LIBEROHfBase):
     DATASET_NAME = "libero_10"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_10.json"))
 
 
 __all__ = [

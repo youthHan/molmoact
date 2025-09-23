@@ -675,6 +675,45 @@ class Trainer:
         loss_masks = loss_masks * (loss_masks > 0)
         labels = labels.long()
         labels.masked_fill_(~(loss_masks > 0), -100)
+
+        original_label_shape = labels.shape
+        logits_for_loss = logits.to(torch.float32).view(-1, logits.size(-1))  # for numerical stability
+
+        labels = labels.view(-1)
+
+        # Defensive checks so we fail fast with a clear error instead of a CUDA crash.
+        vocab_size = logits_for_loss.size(-1)
+        ignore_index = -100
+
+        invalid_neg_mask = (labels < 0) & (labels != ignore_index)
+        if invalid_neg_mask.any():
+            sample_vals = labels[invalid_neg_mask][:8].detach().cpu().tolist()
+            raise RuntimeError(
+                "Encountered negative label ids (other than ignore_index) before cross entropy; "
+                f"examples include {sample_vals}."
+            )
+
+        invalid_pos_mask = labels >= vocab_size
+        if invalid_pos_mask.any():
+            offending = labels[invalid_pos_mask][:8].detach().cpu().tolist()
+            offending_positions = torch.nonzero(invalid_pos_mask, as_tuple=False)[:8].flatten()
+            seq_len = original_label_shape[-1] if original_label_shape else 0
+            if seq_len:
+                offending_examples = [int(idx.item() // seq_len) for idx in offending_positions]
+            else:
+                offending_examples = []
+            metadata = batch.get("metadata") if isinstance(batch, dict) else None
+            meta_snippets = []
+            if isinstance(metadata, list) and offending_examples:
+                for ex_idx in offending_examples:
+                    if 0 <= ex_idx < len(metadata):
+                        meta_snippets.append(metadata[ex_idx])
+            raise RuntimeError(
+                "Found label ids that exceed the vocabulary size before loss computation. "
+                f"Max vocab idx: {vocab_size - 1}; offending values (sample): {offending}; "
+                f"example indices: {offending_examples}; metadata: {meta_snippets}"
+            )
+
         labels = labels.view(-1)
         logits_for_loss = logits.to(torch.float32).view(-1, logits.size(-1)) # for numerical stability
         ce_loss, z_loss = self.loss_fn(
