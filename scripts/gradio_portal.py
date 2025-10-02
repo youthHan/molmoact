@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import math
-from typing import Any, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 from PIL import Image, ImageDraw
@@ -97,6 +97,50 @@ def _draw_traces_on_images(images: Sequence[Image.Image], traces: Sequence[Seque
     return overlays
 
 
+def _gather_images_from_messages(messages: Optional[Sequence[Dict[str, Any]]]) -> List[Image.Image]:
+    images: List[Image.Image] = []
+    if not messages:
+        return images
+    for message in messages:
+        for item in message.get("content", []):
+            if isinstance(item, dict) and item.get("type") == "image":
+                image = item.get("image")
+                if isinstance(image, Image.Image):
+                    images.append(image)
+    return images
+
+
+def _latest_user_images(messages: Optional[Sequence[Dict[str, Any]]]) -> List[Image.Image]:
+    if not messages:
+        return []
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        collected: List[Image.Image] = []
+        for item in message.get("content", []):
+            if isinstance(item, dict) and item.get("type") == "image":
+                image = item.get("image")
+                if isinstance(image, Image.Image):
+                    collected.append(image)
+        if collected:
+            return collected
+    return []
+
+
+def _first_user_image(messages: Optional[Sequence[Dict[str, Any]]]) -> Optional[Image.Image]:
+    if not messages:
+        return None
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        for item in message.get("content", []):
+            if isinstance(item, dict) and item.get("type") == "image":
+                image = item.get("image")
+                if isinstance(image, Image.Image):
+                    return image
+    return None
+
+
 def build_portal(checkpoint: str, device: str) -> gr.Blocks:
     torch_device = torch.device(device)
     processor = AutoProcessor.from_pretrained(
@@ -129,36 +173,61 @@ def build_portal(checkpoint: str, device: str) -> gr.Blocks:
         Any,
         list[Any],
     ]:
-        if message_state is None:
-            message_state = []
-        if chat_history is None:
-            chat_history = []
+        message_state = list(message_state or [])
+        chat_history = list(chat_history or [])
 
         user_message = (user_message or "").strip()
-        if not user_message:
-            gr.Warning("Please enter an instruction for the assistant.")
+        new_images = _load_images(uploaded_files)
+
+        existing_images = _gather_images_from_messages(message_state)
+        available_slots = max_images - len(existing_images)
+
+        if new_images and available_slots <= 0:
+            gr.Warning(
+                "Maximum image limit reached for this conversation. Clear the chat to upload different images."
+            )
+            new_images = []
+
+        if new_images and len(new_images) > available_slots:
+            gr.Warning(
+                f"Only {available_slots} additional image(s) can be used. Extra uploads are ignored for this turn."
+            )
+            new_images = new_images[:available_slots]
+
+        if not user_message and not new_images:
+            if message_state:
+                gr.Warning("Provide a new instruction or upload additional images before submitting.")
+            else:
+                gr.Warning("Please enter an instruction and upload at least one image for the first turn.")
             return chat_history, message_state, None, None, None, []
 
-        images = _load_images(uploaded_files)
-        if not images:
+        user_content: List[Dict[str, Any]] = []
+        for image in new_images:
+            user_content.append({"type": "image", "image": image})
+        if user_message:
+            user_content.append({"type": "text", "text": user_message})
+
+        if user_content:
+            message_state.append({"role": "user", "content": user_content})
+
+        all_images = _gather_images_from_messages(message_state)
+        if not all_images:
             gr.Warning("Please upload at least one image before submitting.")
+            if user_content:
+                message_state.pop()
             return chat_history, message_state, None, None, None, []
-
-        if len(images) > max_images:
-            gr.Warning(f"Received {len(images)} images, but the model only supports {max_images}. Extra images are ignored.")
-            images = images[:max_images]
-
-        message_state = list(message_state)
-        message_state.append({"role": "user", "content": [{"type": "text", "text": user_message}]})
 
         prompt = processor.apply_chat_template(message_state, tokenize=False, add_generation_prompt=True)
 
-        inputs = processor(
-            images=[images],
-            text=prompt,
-            padding=True,
-            return_tensors="pt",
-        )
+        proc_inputs = {
+            "text": prompt,
+            "padding": True,
+            "return_tensors": "pt",
+        }
+        if all_images:
+            proc_inputs["images"] = [all_images]
+
+        inputs = processor(**proc_inputs)
 
         tensor_inputs = {}
         for key, value in inputs.items():
@@ -191,7 +260,13 @@ def build_portal(checkpoint: str, device: str) -> gr.Blocks:
         )[0]
 
         message_state.append({"role": "assistant", "content": [{"type": "text", "text": generated_text}]})
-        chat_history = chat_history + [(user_message, generated_text)]
+
+        display_user = user_message
+        if new_images:
+            image_note = f"[{len(new_images)} image{'s' if len(new_images) != 1 else ''} uploaded]"
+            display_user = f"{display_user}\n{image_note}" if display_user else image_note
+
+        chat_history = chat_history + [(display_user, generated_text)]
 
         try:
             depth_outputs = model.parse_depth(generated_text)
@@ -209,10 +284,17 @@ def build_portal(checkpoint: str, device: str) -> gr.Blocks:
             action_outputs = {"error": str(exc)}
 
         overlays: list[Any]
-        if isinstance(trace_outputs, Sequence) and not isinstance(trace_outputs, (dict, str)):
-            overlays = _draw_traces_on_images(images, trace_outputs)
+        front_view = _first_user_image(message_state)
+        if front_view is not None:
+            base_images = [front_view]
+        elif new_images:
+            base_images = new_images
         else:
-            overlays = [img.copy() for img in images]
+            base_images = _latest_user_images(message_state)
+        if isinstance(trace_outputs, Sequence) and not isinstance(trace_outputs, (dict, str)):
+            overlays = _draw_traces_on_images(base_images, trace_outputs)
+        else:
+            overlays = [img.copy() for img in base_images]
 
         return (
             chat_history,
@@ -226,11 +308,14 @@ def build_portal(checkpoint: str, device: str) -> gr.Blocks:
     def reset_chat() -> tuple[list[tuple[str, str]], list[dict[str, Any]], None, None, None, list[Any]]:
         return [], [], None, None, None, []
 
+    def clear_file_upload() -> Dict[str, Any]:
+        return gr.update(value=None)
+
     with gr.Blocks(title="MolmoAct Gradio Portal") as demo:
         gr.Markdown(
             f"""# MolmoAct Portal
-Upload up to **{max_images}** image(s), provide instructions, and chat with the model.\n"
-            "The portal parses predicted depth, traces, and actions from the response."""
+Upload up to **{max_images}** image(s) across the conversation, provide instructions, and chat with the model.\n"
+            "Traces render on the first uploaded (front-view) image; later uploads act as supplementary context. The portal parses predicted depth, traces, and actions from the response."""
         )
 
         with gr.Row():
@@ -244,22 +329,39 @@ Upload up to **{max_images}** image(s), provide instructions, and chat with the 
             trace_json = gr.JSON(label="Trace Output")
             action_json = gr.JSON(label="Action Output")
 
-        overlay_gallery = gr.Gallery(label="Trace Overlays", columns=2, height="auto", allow_preview=True)
+        overlay_gallery = gr.Gallery(
+            label="Trace Overlays",
+            columns=1,
+            height=320,
+            object_fit="contain",
+            allow_preview=True,
+        )
 
         submit = gr.Button("Generate", variant="primary")
         clear = gr.Button("Clear Conversation")
 
         state_messages = gr.State([])
 
-        submit.click(
+        submit_event = submit.click(
             infer,
             inputs=[instruction, file_input, chatbot, state_messages],
             outputs=[chatbot, state_messages, depth_json, trace_json, action_json, overlay_gallery],
             show_progress=True,
         )
+        submit_event.then(
+            clear_file_upload,
+            inputs=[],
+            outputs=file_input,
+            queue=False,
+        )
         clear.click(
             reset_chat,
             outputs=[chatbot, state_messages, depth_json, trace_json, action_json, overlay_gallery],
+            queue=False,
+        )
+        clear.click(
+            clear_file_upload,
+            outputs=file_input,
             queue=False,
         )
 
