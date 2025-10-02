@@ -348,7 +348,51 @@ pip install gradio  # or pip install -e .[serve]
 python scripts/gradio_portal.py --checkpoint <hf_repo_or_local_path>
 ```
 
-Add `--device cuda` (default when available) to run on GPU or `--device cpu` to stay on CPU. The UI allows up to the number of images defined by the checkpoint (commonly two views) and visualizes the generated depth strings, trajectory traces, and parsed actions alongside the conversation history.
+Add `--device cuda` (default when available) to run on GPU or `--device cpu` to stay on CPU. The portal keeps a running conversation with the model, accepts supplementary images on later turns, and always renders predicted traces on the first front-view image.
+
+**Key helpers (`scripts/gradio_portal.py`):**
+- `_load_images` standardises Gradio uploads into RGB PIL images before they reach the processor.
+- `_max_images_from_config` queries the checkpoint’s multimodal config so the UI enforces the model’s image budget.
+- `_gather_images_from_messages`, `_latest_user_images`, `_first_user_image` recover all stored frames, the newest batch, and the canonical front-view used for overlay rendering.
+- `_normalize_trace` and `_draw_traces_on_images` scale model traces, pick colours, and paint markers/lines over the chosen image.
+
+**Generation loop:**
+1. `infer` (triggered by the **Generate** button) validates the new text/images against the limit and appends the user turn to the running message state.
+2. `processor.apply_chat_template` formats the multi-round transcript; `processor(**kwargs)` tokenises text and bundles the accumulated images.
+3. Inputs are moved to the target device via `_cast_for_device`, then `model.generate` produces the next response.
+4. The decoded assistant reply updates the chat log and is parsed through `parse_depth/parse_trace/parse_action`. Overlays are redrawn on the stored front-view image.
+5. `gr.State`, the chatbot widget, JSON panes, and gallery refresh in one pass; a chained `.then` clears the file upload area for the next turn.
+
+```
+User Uploads/Text
+        │
+        ▼
+_load_images ──► message state update ──► apply_chat_template
+                                          │
+                                          ▼
+                                   processor(**)
+                                          │
+                                          ▼
+                                  model.generate
+                                          │
+                     ┌────────────────────┴────────────────────┐
+                     ▼                                         ▼
+              batch_decode                             parse_depth/trace/action
+                     │                                         │
+                     ▼                                         │
+             chat history update ◄──── front-view selector ────┘
+                     │
+                     ▼
+              _draw_traces_on_images
+                     │
+                     ▼
+              Gradio widgets refresh
+```
+
+**Usage tips:**
+- Upload your primary front-view image on the first turn; later image uploads act as auxiliary observations for the language model.
+- The gallery is capped to a single column (320 px high) so trace previews stay compact during multi-round chats.
+- Use the **Clear Conversation** button to reset both the dialogue and the image budget.
 
 ## 6. License and Use
 
