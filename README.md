@@ -284,6 +284,11 @@ WANDB_API_KEY=<your_wandb_api_key> torchrun --nnodes=8 --nproc-per-node=8 \
 - `--max_images 2` again indicates two images per input.
 - Choose `--duration <steps>` based on the **LIBERO task suite**.
 
+**Continuing a LoRA run**
+- Checkpoints include LoRA adapters in directories like `checkpoints/<exp_name>/stepXXXX-lora/`.
+- To resume from a saved adapter, keep `--lora_enable` and add `--lora_load_path checkpoints/<exp_name>/stepXXXX-lora` when relaunching the job.
+- The launcher forwards this path so `scripts/train.py` restores the adapter weights before training continues.
+
 **Choose `<task_suite>` and `<steps>`**
 | `<task_suite>` | `<steps>` |
 |---|---|
