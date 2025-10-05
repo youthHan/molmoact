@@ -403,6 +403,11 @@ class TrainConfig(BaseConfig):
     The path to a sharded or unshared checkpoint to start from.
     """
 
+    lora_load_path: Optional[str] = None
+    """
+    Optional path to a previously saved LoRA adapter directory to load before training.
+    """
+
     reset_optimizer_state: bool = False
     """
     Don't load try and load optimizer state from `load_path`

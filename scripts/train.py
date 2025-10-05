@@ -400,21 +400,35 @@ def run_trainer(cfg: TrainConfig) -> None:
                 load_model_state_hf(start_from, fsdp_model)
 
             if model_cfg.lora_enable:
-                from peft import LoraConfig, get_peft_model
+                if cfg.lora_load_path:
+                    from peft import PeftModel
 
-                # same lora config as openvla
-                lora_config = LoraConfig(
-                    r=model_cfg.lora_rank,
-                    lora_alpha=min(model_cfg.lora_rank, model_cfg.lora_alpha),
-                    # target_modules=find_all_linear_names(fsdp_model, model_cfg),
-                    target_modules="all-linear",
-                    lora_dropout=model_cfg.lora_dropout,
-                    bias=model_cfg.lora_bias,
-                    init_lora_weights="gaussian",
-                )
+                    log.info(f"Loading LoRA adapter from {cfg.lora_load_path}")
+                    trainer.fsdp_model = PeftModel.from_pretrained(
+                        fsdp_model,
+                        cfg.lora_load_path,
+                        adapter_name="default",
+                        is_trainable=True,
+                    )
+                    trainer.fsdp_model.set_adapter("default")
+                else:
+                    from peft import LoraConfig, get_peft_model
 
-                log.info("Adding LoRA adapters...")
-                trainer.fsdp_model = get_peft_model(fsdp_model, lora_config)
+                    # same lora config as openvla
+                    lora_config = LoraConfig(
+                        r=model_cfg.lora_rank,
+                        lora_alpha=min(model_cfg.lora_rank, model_cfg.lora_alpha),
+                        # target_modules=find_all_linear_names(fsdp_model, model_cfg),
+                        target_modules="all-linear",
+                        lora_dropout=model_cfg.lora_dropout,
+                        bias=model_cfg.lora_bias,
+                        init_lora_weights="gaussian",
+                    )
+
+                    log.info("Adding LoRA adapters...")
+                    trainer.fsdp_model = get_peft_model(fsdp_model, lora_config)
+
+                fsdp_model = trainer.fsdp_model
                 # Freeze parameters depending on what we are tuning
                 if not cfg.ft_connector:
                     log.info(f"Freezing connector")

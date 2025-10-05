@@ -153,6 +153,8 @@ if __name__ == "__main__":
     parser.add_argument("--lora_alpha", default=16, type=int)
     parser.add_argument("--lora_dropout", default=0.05, type=float)
     parser.add_argument("--lora_bias", default="none", type=str)
+    parser.add_argument("--lora_load_path", default=None, type=str,
+                        help="Load LoRA adapters from this directory before continuing training")
     parser.add_argument("--img_aug", action='store_true')
     parser.add_argument("--pin_memory", action='store_true')
     parser.add_argument("--ft_embedding", default="lm_head", type=str)
@@ -532,6 +534,7 @@ if __name__ == "__main__":
         ),
         load_path=None,
         initial_model_checkpoint=checkpoint,
+        lora_load_path=args.lora_load_path,
         save_interval=args.save_interval, # 2000 or 1 for debug
         save_num_checkpoints_to_keep=args.save_num_checkpoints_to_keep,
         global_train_batch_size=global_batch_size,
