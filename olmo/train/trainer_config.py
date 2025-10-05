@@ -16,7 +16,11 @@ from omegaconf import OmegaConf as om
 import torch
 from omegaconf.errors import OmegaConfBaseException
 from torch.distributed import init_device_mesh
-from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, MixedPrecisionPolicy
+from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
+try:
+    from torch.distributed.fsdp import  MixedPrecisionPolicy
+except:
+    pass
 
 from olmo.config import BaseConfig, StrEnum
 from olmo.data.data_loader import DataLoaderConfig
@@ -226,6 +230,11 @@ class RuntimeData(BaseConfig):
 
 @dataclass
 class TrainConfig(BaseConfig):
+    local_rank: int = 0
+    """
+    Local rank of the process.
+    """
+
     """
     OLMo training configuration.
     """

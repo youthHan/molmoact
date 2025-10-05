@@ -226,6 +226,8 @@ def get_dataset_by_name(dataset_name, split) -> Dataset:
         return LIBEROObject(split="train", style="demo")
     if "libero_goal" in dataset_name:
         return LIBEROGoal(split="train", style="demo")
+    if "libero_long_clean" in dataset_name:
+        return LIBEROLongClean(split="train", style="demo")
     if "libero_long" in dataset_name:
         return LIBEROLong(split="train", style="demo")
     

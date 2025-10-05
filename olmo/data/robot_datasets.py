@@ -340,6 +340,13 @@ class RobotHfDatasetLIBERO(RobotHfDataset):
     @classmethod
     def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
         return _infer_cameras(dataset_name)
+    
+class RobotHfDatasetLIBEROLongClean(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/DannyJun/libero_10/"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
 
 def _prep_libero_config(dataset_name: str, split: str = "train"):
     RobotHfDatasetLIBERO.download(dataset_name=dataset_name)
@@ -411,18 +418,21 @@ class _LIBEROHfBase(Dataset):
         return all_match_parts
                 
     def get(self, item, rng): 
-        pre_data = self._inner.get(item, rng)
-        post_data = copy.deepcopy(pre_data)
-        all_tokens = self._extract_action_tokens_from_conversation(post_data["answers"])
+        if bool(int(os.environ.get("GLOBAL_STATS", 0))):
+            pre_data = self._inner.get(item, rng)
+            post_data = copy.deepcopy(pre_data)
+            all_tokens = self._extract_action_tokens_from_conversation(post_data["answers"])
 
-        new_answers = post_data["answers"]
-        for tokens_pair in all_tokens:
-            old_tokens = tokens_pair[0]
-            tokens = tokens_pair[1]
-            new_tokens = ", ".join(self.STATS_MAPPING[" ".join(tokens)])
-            new_answers = new_answers.replace(old_tokens, new_tokens)
-        post_data["answers"] = new_answers
-        return post_data
+            new_answers = post_data["answers"]
+            for tokens_pair in all_tokens:
+                old_tokens = tokens_pair[0]
+                tokens = tokens_pair[1]
+                new_tokens = ", ".join(self.STATS_MAPPING[" ".join(tokens)])
+                new_answers = new_answers.replace(old_tokens, new_tokens)
+            post_data["answers"] = new_answers
+            return post_data
+        else:
+            return self._inner.get(item, rng)
 
 
 # Concrete midtraining datasets (unchanged names)
@@ -445,6 +455,41 @@ class LIBEROLong(_LIBEROHfBase):
     DATASET_NAME = "libero_10"
     STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_10.json"))
 
+class LIBEROLongClean(_LIBEROHfBase):
+    DATASET_NAME = "libero_10_clean"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_10.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROLongClean.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROLongClean(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Long Clean: DannyJun/libero_10, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_10", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
 
 __all__ = [
     # Pretraining wrappers
@@ -454,4 +499,5 @@ __all__ = [
     "MolmoActDatasetTabletopPrimary", "MolmoActDatasetTabletopSecondary",
     # Libero wrappers
     "LIBEROSpatial", "LIBEROObject", "LIBEROGoal", "LIBEROLong",
+    "LIBEROLongClean",
 ]

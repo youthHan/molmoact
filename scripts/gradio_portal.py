@@ -365,7 +365,7 @@ Upload up to **{max_images}** image(s) across the conversation, provide instruct
             queue=False,
         )
 
-        demo.queue(concurrency_count=2)
+        demo.queue()
 
     return demo
 

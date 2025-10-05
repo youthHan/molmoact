@@ -299,6 +299,22 @@ if __name__ == "__main__":
                 "libero_long",
             ], 1.0],
         ]
+    elif args.mixture in ["libero-all-v2"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_spatial", [
+                "libero_spatial",
+            ], 0.225],
+            ["libero_object", [
+                "libero_object",
+            ], 0.225],
+            ["libero_goal", [
+                "libero_goal",
+            ], 0.18],
+            ["libero_long", [
+                "libero_long",
+            ], 0.37],
+        ]
     elif args.mixture in ["libero-spatial"]:
         # this will be uniform sampling
         tasks = [
@@ -325,6 +341,13 @@ if __name__ == "__main__":
         tasks = [
             ["libero_long", [
                 "libero_long",
+            ], 1.0],
+        ]
+    elif args.mixture in ["libero-long-clean"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_long_clean", [
+                "libero_long_clean",
             ], 1.0],
         ]
     else:
@@ -409,7 +432,7 @@ if __name__ == "__main__":
         submixture = get_training_mixture(submixture)
         root_size_mixture.append(RootSizeMixture(rate, submixture))
 
-    num_workers = 16
+    num_workers = 0 # 16 # 1 #8
     evaluations = []
     if not args.turn_off_inference:
         for task in eval_tasks:
