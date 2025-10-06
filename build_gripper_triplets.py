@@ -28,6 +28,8 @@ os.environ.setdefault("DATASETS_ARROW_DEFAULT_MEMORY_MAPPING", "1")
 # cut chatter
 os.environ.setdefault("DATASETS_VERBOSITY", "error")
 
+CARE_WORDS=['pick', 'place']
+
 root_dir = "/mnt/bn/kinetics-lp-maliva/playground_projects/bagel/self-cook/libero_10_no_noops_1.0.0_lerobot/"
 # Optional LeRobot (preferred path if installed)
 def try_load_lerobot_dataset(repo_or_path: str, split: str, root: Optional[str]):
@@ -303,7 +305,7 @@ def extract_value(row: Dict[str, Any], key: Optional[str]):
 
 
 def extract_state_line(row: Dict[str, Any]) -> Optional[List[float]]:
-    state_val = extract_value(row, 'observation.state')
+    state_val = row['observation.state']
     if state_val is None:
         return None
     try:
@@ -313,7 +315,8 @@ def extract_state_line(row: Dict[str, Any]) -> Optional[List[float]]:
     if arr.size < 8:
         return None
     try:
-        return [float(arr[0]), float(arr[1]), float(arr[2]), float(arr[6] - arr[7])]
+        # return [float(arr[0]), float(arr[1]), float(arr[2]), float(arr[6] - arr[7])] # libero data
+        return [float(arr[0]), float(arr[1]), float(arr[2]), float(arr[7])] # droid data
     except Exception:
         return None
 
@@ -815,7 +818,8 @@ def main():
                 if ep_idx_val is None:
                     continue
                 tasks = entry.get('tasks') or []
-                instruction = tasks[0] if tasks else ''
+                instruction = tasks[0] if tasks and any([word in tasks[0].lower() for word in CARE_WORDS]) else '' # droid data
+                # instruction = tasks[0] if tasks else '' # libero data
                 inst_episodes_dict.setdefault(instruction, []).append(ep_idx_val)
                 episodes_winst_dict[ep_idx_val] = instruction
         inst_done_mark = {inst: False for inst in inst_episodes_dict if inst}
@@ -879,7 +883,8 @@ def main():
                 visualize=True,
                 out_dir="./self_cook_demo_figs"
             )
-            cps = [int(cp) for cp in event_info['fused'].t_peak.values.tolist()]
+            cps = [int(cp) for cp in event_info['g'].t_peak.values.tolist()] # droid data
+            # cps = [int(cp) for cp in event_info['fused'].t_peak.values.tolist()] # libero data
         except Exception as exc:
             print(f"[WARN] episode {ep_id}: change-point detection failed ({exc})")
             continue
@@ -1067,4 +1072,26 @@ python build_gripper_triplets.py \
     --image_key observation.images.image \
     --gripper_key action.6 \
     --min_changes 1
+"""
+
+"""
+python build_gripper_triplets.py \
+    --dataset /mnt/bn/kinetics-lp-maliva/playground_projects/bagel/self-cook/libero_90_no_noops_lerobot/ \
+    --split train --out_dir outputs/libero_90  \
+    --dump_name  libero_90 --use_parquet_reader  \
+    --parquet_dir /mnt/bn/kinetics-lp-maliva/playground_projects/bagel/self-cook/libero_90_no_noops_lerobot/data/ \
+    --prefer_video_fallback \
+    --video_dir /mnt/bn/kinetics-lp-maliva/playground_projects/bagel/self-cook/libero_90_no_noops_lerobot/videos/ \
+    --video_pattern "chunk-*/observation.images.image/episode_{episode:06d}.mp4"  \
+    --gripper_key action.6 --min_changes 1
+
+python build_gripper_triplets.py \
+    --dataset /mnt/bn/kinetics-lp-maliva/playground_projects/bagel/droid_lerobot/ \
+    --split train --out_dir outputs/droid_lerobot_p3 \
+    --dump_name  droid_lerobot_gripper_only_p3 --use_parquet_reader \
+    --parquet_dir "/mnt/bn/kinetics-lp-maliva/playground_projects/bagel/droid_lerobot/data_demo3/*/*.parquet" \
+    --prefer_video_fallback \
+    --video_dir /mnt/bn/kinetics-lp-maliva/playground_projects/bagel/droid_lerobot/videos/ \
+    --video_pattern "chunk-*/observation.images.exterior_image_1_left/episode_{episode:06d}.mp4"  \
+    --gripper_key action.6 --min_changes 1
 """
