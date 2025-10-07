@@ -274,7 +274,7 @@ def build_demo(
                 apply_filter_btn = gr.Button("Apply filter", variant="primary")
 
             with gr.Column(scale=3):
-                distribution_plot = gr.Plot(value=render_distribution(initial_filtered_ids), height=280)
+                distribution_plot = gr.Plot(value=render_distribution(initial_filtered_ids))
                 distribution_summary_md = gr.Markdown(distribution_summary(initial_filtered_ids))
 
         with gr.Row():
