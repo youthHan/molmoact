@@ -49,7 +49,10 @@ def normalize_change_point(value: object) -> str:
         return str(value)
 
 
-def load_manifest_lookup(path: Optional[Path]) -> Dict[Tuple[str, str], str]:
+ManifestEntry = Tuple[str, Optional[Path]]
+
+
+def load_manifest_lookup(path: Optional[Path]) -> Dict[Tuple[str, str], ManifestEntry]:
     if path is None:
         return {}
     if not path.exists():
@@ -60,7 +63,7 @@ def load_manifest_lookup(path: Optional[Path]) -> Dict[Tuple[str, str], str]:
     if missing:
         raise ValueError(f"Manifest CSV is missing columns: {', '.join(sorted(missing))}")
     base_dir = path.parent
-    lookup: Dict[Tuple[str, str], str] = {}
+    lookup: Dict[Tuple[str, str], ManifestEntry] = {}
     for _, row in df.iterrows():
         ep_id = str(row["episode_id"])
         cp_key = normalize_change_point(row["change_point"])
@@ -68,9 +71,12 @@ def load_manifest_lookup(path: Optional[Path]) -> Dict[Tuple[str, str], str]:
         if pd.isna(png_val):
             continue
         png_path = Path(str(png_val))
+        base_for_entry: Optional[Path] = None
         if not png_path.is_absolute():
-            png_path = (base_dir / png_path).resolve()
-        lookup[(ep_id, cp_key)] = str(png_path)
+            base_for_entry = base_dir
+        else:
+            png_path = png_path.resolve()
+        lookup[(ep_id, cp_key)] = (str(png_path), base_for_entry)
     return lookup
 
 
@@ -79,7 +85,7 @@ def build_demo(
     chunk_size: int,
     image_root: Optional[Path],
     image_pattern: Optional[str],
-    manifest_lookup: Dict[Tuple[str, str], str],
+    manifest_lookup: Dict[Tuple[str, str], ManifestEntry],
 ) -> gr.Blocks:
     episode_ids = sorted(data.keys(), key=lambda x: (int(x) if x.isdigit() else x))
     lengths_lookup = {
@@ -104,33 +110,48 @@ def build_demo(
 
     def resolve_frame_image(episode_id: str, frame_id: str) -> Optional[str]:
         manifest_key = (episode_id, normalize_change_point(frame_id))
-        candidate: Optional[Path] = None
-        if manifest_lookup and manifest_key in manifest_lookup:
-            candidate = Path(manifest_lookup[manifest_key])
-            if not candidate.is_absolute() and image_root is not None:
-                candidate = image_root / candidate
-        elif image_root is not None:
-            pattern = image_pattern or "{image_root}/{episode_id}/{frame_id}.jpg"
-            fmt = pattern.format(
-                image_root=str(image_root),
-                episode_id=episode_id,
-                frame_id=frame_id,
-            )
-            candidate = Path(fmt)
-            if not candidate.is_absolute():
-                candidate = image_root / candidate
-        if candidate is None:
-            return None
-        if not candidate.is_absolute():
-            if image_root is not None:
-                candidate = (image_root / candidate).resolve()
+        candidate_paths: List[Path] = []
+
+        manifest_entry = manifest_lookup.get(manifest_key)
+        if manifest_entry:
+            path_str, entry_base = manifest_entry
+            manifest_path = Path(path_str)
+            if manifest_path.is_absolute():
+                candidate_paths.append(manifest_path)
             else:
-                candidate = candidate.resolve(strict=False)
-        if candidate.exists():
-            return str(candidate)
-        if manifest_lookup and manifest_key in manifest_lookup:
-            return str(candidate)
-        return None
+                if entry_base is not None:
+                    candidate_paths.append((entry_base / manifest_path).resolve())
+                if image_root is not None:
+                    candidate_paths.append((image_root / manifest_path).resolve())
+                candidate_paths.append(manifest_path.resolve(strict=False))
+        else:
+            if image_root is not None:
+                pattern = image_pattern or "{image_root}/{episode_id}/{frame_id}.jpg"
+                fmt = pattern.format(
+                    image_root=str(image_root),
+                    episode_id=episode_id,
+                    frame_id=frame_id,
+                )
+                fallback_path = Path(fmt)
+                if fallback_path.is_absolute():
+                    candidate_paths.append(fallback_path.resolve())
+                else:
+                    candidate_paths.append((image_root / fallback_path).resolve())
+
+        # Deduplicate paths while preserving order
+        seen: set[str] = set()
+        unique_paths: List[Path] = []
+        for path in candidate_paths:
+            key = str(path)
+            if key not in seen:
+                seen.add(key)
+                unique_paths.append(path)
+
+        for path in unique_paths:
+            if path.exists():
+                return str(path)
+
+        return str(unique_paths[0]) if unique_paths else None
 
     def show_episode(episode_id: str):
         if not episode_id:
@@ -237,41 +258,46 @@ def build_demo(
         initial_episode = initial_ids[0] if initial_ids else None
 
         with gr.Row():
-            min_filter = gr.Number(
-                label="Min milestones (≥)",
-                value=min_length if length_values else None,
-                precision=0,
-            )
-            max_filter = gr.Number(
-                label="Max milestones (≤)",
-                value=max_length if length_values else None,
-                precision=0,
-            )
-            apply_filter_btn = gr.Button("Apply filter", variant="primary")
+            with gr.Column(scale=2):
+                min_filter = gr.Number(
+                    label="Min milestones (≥)",
+                    value=min_length if length_values else None,
+                    precision=0,
+                )
+            with gr.Column(scale=2):
+                max_filter = gr.Number(
+                    label="Max milestones (≤)",
+                    value=max_length if length_values else None,
+                    precision=0,
+                )
+            with gr.Column(scale=1):
+                apply_filter_btn = gr.Button("Apply filter", variant="primary")
 
-        distribution_summary_md = gr.Markdown(distribution_summary(initial_filtered_ids))
-
-        distribution_plot = gr.Plot(value=render_distribution(initial_filtered_ids))
+            with gr.Column(scale=3):
+                distribution_plot = gr.Plot(value=render_distribution(initial_filtered_ids), height=280)
+                distribution_summary_md = gr.Markdown(distribution_summary(initial_filtered_ids))
 
         with gr.Row():
-            chunk_slider = gr.Slider(
-                minimum=0,
-                maximum=max(total_chunks - 1, 0),
-                step=1,
-                value=initial_chunk,
-                label="Chunk index",
-            )
-            chunk_label = gr.Markdown(describe_chunk(initial_ranges, initial_chunk))
-
-        episode_selector = gr.Radio(
-            choices=initial_ids,
-            value=initial_episode,
-            label="Episode ids in chunk",
-        )
-
-        task_markdown = gr.Markdown()
-        frame_table = gr.Dataframe(headers=["Frame", "Milestone", "Reason"], interactive=False)
-        image_gallery = gr.Gallery(label="Frames", show_label=True)
+            with gr.Column(scale=1, min_width=240):
+                chunk_slider = gr.Slider(
+                    minimum=0,
+                    maximum=max(total_chunks - 1, 0),
+                    step=1,
+                    value=initial_chunk,
+                    label="Chunk index",
+                )
+                chunk_label = gr.Markdown(describe_chunk(initial_ranges, initial_chunk))
+                episode_selector = gr.Radio(
+                    choices=initial_ids,
+                    value=initial_episode,
+                    label="Episode ids in chunk",
+                    interactive=True,
+                )
+            with gr.Column(scale=3):
+                task_markdown = gr.Markdown()
+                frame_table = gr.Dataframe(headers=["Frame", "Milestone", "Reason"], interactive=False, wrap=True)
+            with gr.Column(scale=3):
+                image_gallery = gr.Gallery(label="Frames", show_label=True, columns=2)
 
         filtered_ids_state = gr.State(initial_filtered_ids)
         chunk_ranges_state = gr.State(initial_ranges)
@@ -376,8 +402,32 @@ def main():
     data = load_annotations(args.annotations)
     image_root = args.image_root.resolve() if args.image_root else None
     manifest_lookup = load_manifest_lookup(args.manifest_csv)
+
+    allowed_paths: set[str] = set()
+    if image_root is not None:
+        allowed_paths.add(str(image_root))
+    if args.manifest_csv is not None:
+        allowed_paths.add(str(args.manifest_csv.parent.resolve()))
+    for path_str, base_dir in manifest_lookup.values():
+        try:
+            image_path = Path(path_str)
+            if image_path.is_absolute():
+                allowed_paths.add(str(image_path.parent.resolve()))
+            else:
+                if base_dir is not None:
+                    allowed_paths.add(str((base_dir / image_path).parent.resolve()))
+                if image_root is not None:
+                    allowed_paths.add(str((image_root / image_path).parent.resolve()))
+        except Exception:
+            continue
+
     demo = build_demo(data, args.chunk_size, image_root, args.image_pattern, manifest_lookup)
-    demo.queue().launch(share=args.share)
+
+    launch_kwargs = {"share": args.share}
+    if allowed_paths:
+        launch_kwargs["allowed_paths"] = sorted(allowed_paths)
+
+    demo.queue().launch(**launch_kwargs)
 
 
 if __name__ == "__main__":
