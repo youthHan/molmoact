@@ -51,6 +51,18 @@ def normalize_change_point(value: object) -> str:
 
 ManifestEntry = Tuple[str, Optional[Path]]
 
+GALLERY_CSS = """
+.frames-gallery img {
+    object-fit: contain !important;
+    width: 100% !important;
+    height: auto !important;
+}
+
+.frames-gallery button {
+    aspect-ratio: auto !important;
+}
+"""
+
 
 def load_manifest_lookup(path: Optional[Path]) -> Dict[Tuple[str, str], ManifestEntry]:
     if path is None:
@@ -241,7 +253,7 @@ def build_demo(
             gallery_items,
         )
 
-    with gr.Blocks(title="Annotation Portal") as demo:
+    with gr.Blocks(title="Annotation Portal", css=GALLERY_CSS) as demo:
         gr.Markdown("# Annotation Browser")
         gr.Markdown(
             "Use the filters to narrow episodes, browse chunks of ids, and click an id to inspect its annotated frames."
@@ -297,7 +309,7 @@ def build_demo(
                 task_markdown = gr.Markdown()
                 frame_table = gr.Dataframe(headers=["Frame", "Milestone", "Reason"], interactive=False, wrap=True)
             with gr.Column(scale=3):
-                image_gallery = gr.Gallery(label="Frames", show_label=True, columns=2)
+                image_gallery = gr.Gallery(label="Frames", show_label=True, columns=2, elem_classes=["frames-gallery"]) 
 
         filtered_ids_state = gr.State(initial_filtered_ids)
         chunk_ranges_state = gr.State(initial_ranges)
