@@ -5,7 +5,7 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import gradio as gr
 import pandas as pd
@@ -33,7 +33,54 @@ def chunk_metadata(episode_ids: List[str], chunk_size: int) -> Tuple[int, List[T
     return chunks, ranges
 
 
-def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
+def normalize_change_point(value: object) -> str:
+    try:
+        if value is None or value == "":
+            return ""
+        if isinstance(value, (int,)):
+            return str(int(value))
+        if isinstance(value, float):
+            return str(int(value))
+        text = str(value)
+        if text.isdigit():
+            return text
+        return str(int(float(text)))
+    except Exception:
+        return str(value)
+
+
+def load_manifest_lookup(path: Optional[Path]) -> Dict[Tuple[str, str], str]:
+    if path is None:
+        return {}
+    if not path.exists():
+        raise FileNotFoundError(f"Manifest CSV not found: {path}")
+    df = pd.read_csv(path)
+    required = {"episode_id", "change_point", "png"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Manifest CSV is missing columns: {', '.join(sorted(missing))}")
+    base_dir = path.parent
+    lookup: Dict[Tuple[str, str], str] = {}
+    for _, row in df.iterrows():
+        ep_id = str(row["episode_id"])
+        cp_key = normalize_change_point(row["change_point"])
+        png_val = row["png"]
+        if pd.isna(png_val):
+            continue
+        png_path = Path(str(png_val))
+        if not png_path.is_absolute():
+            png_path = (base_dir / png_path).resolve()
+        lookup[(ep_id, cp_key)] = str(png_path)
+    return lookup
+
+
+def build_demo(
+    data: Dict[str, Dict],
+    chunk_size: int,
+    image_root: Optional[Path],
+    image_pattern: Optional[str],
+    manifest_lookup: Dict[Tuple[str, str], str],
+) -> gr.Blocks:
     episode_ids = sorted(data.keys(), key=lambda x: (int(x) if x.isdigit() else x))
     lengths_lookup = {
         eid: len((data.get(eid, {}).get("picked") or []))
@@ -55,25 +102,59 @@ def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
         start, end = ranges[chunk_index]
         return f"Chunk {chunk_index + 1}/{len(ranges)}: episodes {start + 1} – {end}"
 
+    def resolve_frame_image(episode_id: str, frame_id: str) -> Optional[str]:
+        manifest_key = (episode_id, normalize_change_point(frame_id))
+        candidate: Optional[Path] = None
+        if manifest_lookup and manifest_key in manifest_lookup:
+            candidate = Path(manifest_lookup[manifest_key])
+            if not candidate.is_absolute() and image_root is not None:
+                candidate = image_root / candidate
+        elif image_root is not None:
+            pattern = image_pattern or "{image_root}/{episode_id}/{frame_id}.jpg"
+            fmt = pattern.format(
+                image_root=str(image_root),
+                episode_id=episode_id,
+                frame_id=frame_id,
+            )
+            candidate = Path(fmt)
+            if not candidate.is_absolute():
+                candidate = image_root / candidate
+        if candidate is None:
+            return None
+        if not candidate.is_absolute():
+            if image_root is not None:
+                candidate = (image_root / candidate).resolve()
+            else:
+                candidate = candidate.resolve(strict=False)
+        if candidate.exists():
+            return str(candidate)
+        if manifest_lookup and manifest_key in manifest_lookup:
+            return str(candidate)
+        return None
+
     def show_episode(episode_id: str):
         if not episode_id:
             empty_table = pd.DataFrame(columns=["Frame", "Milestone", "Reason"])
-            return "Select an episode to view details.", empty_table
+            return "Select an episode to view details.", empty_table, []
         entry = data.get(episode_id)
         if not entry:
             empty_table = pd.DataFrame(columns=["Frame", "Milestone", "Reason"])
-            return f"Episode {episode_id} not found in annotations.", empty_table
+            return f"Episode {episode_id} not found in annotations.", empty_table, []
         task = entry.get("task", "")
         picked = entry.get("picked", []) or []
         rows = []
+        images: List[Tuple[str, str]] = []
         for item in picked:
-            rows.append([
-                item.get("frame_id", ""),
-                item.get("milestone", ""),
-                item.get("reason", ""),
-            ])
+            frame_id = str(item.get("frame_id", ""))
+            milestone = item.get("milestone", "")
+            reason = item.get("reason", "")
+            rows.append([frame_id, milestone, reason])
+            img_path = resolve_frame_image(episode_id, frame_id)
+            if img_path:
+                caption = f"Frame {frame_id}: {milestone}" if milestone else f"Frame {frame_id}"
+                images.append((img_path, caption))
         df = pd.DataFrame(rows, columns=["Frame", "Milestone", "Reason"])
-        return f"**Task:** {task}\n\n**Episode:** {episode_id}", df
+        return f"**Task:** {task}\n\n**Episode:** {episode_id}", df, images
 
     def lengths_for_ids(ids: List[str]) -> List[int]:
         return [lengths_lookup.get(eid, 0) for eid in ids]
@@ -107,28 +188,36 @@ def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
 **Average milestones:** {avg_len:.2f}"
         )
 
-    def filtered_episode_ids(bounds: Tuple[int, int]) -> List[str]:
-        low, high = int(bounds[0]), int(bounds[1])
-        return [eid for eid in episode_ids if low <= lengths_lookup.get(eid, 0) <= high]
+    def filtered_episode_ids(low: Optional[float], high: Optional[float]) -> List[str]:
+        if low is None:
+            low = min_length
+        if high is None:
+            high = max_length
+        low_i, high_i = int(low), int(high)
+        if low_i > high_i:
+            low_i, high_i = high_i, low_i
+        return [eid for eid in episode_ids if low_i <= lengths_lookup.get(eid, 0) <= high_i]
 
     def update_chunk(chunk_index: int, filtered_ids: List[str], ranges: List[Tuple[int, int]]):
         options = available_ids(filtered_ids, ranges, chunk_index)
         chunk_text = describe_chunk(ranges, chunk_index)
         if not options:
-            placeholder_text, placeholder_table = show_episode("")
+            placeholder_text, placeholder_table, placeholder_gallery = show_episode("")
             return (
                 gr.Radio.update(choices=[], value=None),
                 chunk_text,
                 placeholder_text,
                 placeholder_table,
+                placeholder_gallery,
             )
         value = options[0]
-        episode_text, episode_table = show_episode(value)
+        episode_text, episode_table, gallery_items = show_episode(value)
         return (
             gr.Radio.update(choices=options, value=value),
             chunk_text,
             episode_text,
             episode_table,
+            gallery_items,
         )
 
     with gr.Blocks(title="Annotation Portal") as demo:
@@ -148,14 +237,19 @@ def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
         initial_episode = initial_ids[0] if initial_ids else None
 
         with gr.Row():
-            filter_slider = gr.RangeSlider(
-                minimum=min_length,
-                maximum=max_length or 1,
-                value=(min_length, max_length) if length_values else (0, 0),
-                step=1,
-                label="Filter episodes by milestone count",
+            min_filter = gr.Number(
+                label="Min milestones (≥)",
+                value=min_length if length_values else None,
+                precision=0,
             )
-            distribution_summary_md = gr.Markdown(distribution_summary(initial_filtered_ids))
+            max_filter = gr.Number(
+                label="Max milestones (≤)",
+                value=max_length if length_values else None,
+                precision=0,
+            )
+            apply_filter_btn = gr.Button("Apply filter", variant="primary")
+
+        distribution_summary_md = gr.Markdown(distribution_summary(initial_filtered_ids))
 
         distribution_plot = gr.Plot(value=render_distribution(initial_filtered_ids))
 
@@ -177,6 +271,7 @@ def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
 
         task_markdown = gr.Markdown()
         frame_table = gr.Dataframe(headers=["Frame", "Milestone", "Reason"], interactive=False)
+        image_gallery = gr.Gallery(label="Frames", show_label=True)
 
         filtered_ids_state = gr.State(initial_filtered_ids)
         chunk_ranges_state = gr.State(initial_ranges)
@@ -184,17 +279,17 @@ def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
         chunk_slider.change(
             update_chunk,
             inputs=[chunk_slider, filtered_ids_state, chunk_ranges_state],
-            outputs=[episode_selector, chunk_label, task_markdown, frame_table],
+            outputs=[episode_selector, chunk_label, task_markdown, frame_table, image_gallery],
         )
 
         episode_selector.change(
             show_episode,
             inputs=episode_selector,
-            outputs=[task_markdown, frame_table],
+            outputs=[task_markdown, frame_table, image_gallery],
         )
 
-        def apply_filter(bounds: Tuple[int, int]):
-            filtered_ids = filtered_episode_ids(bounds)
+        def apply_filter(min_bound: Optional[float], max_bound: Optional[float]):
+            filtered_ids = filtered_episode_ids(min_bound, max_bound)
             new_total, new_ranges = chunk_metadata(filtered_ids, chunk_size)
             chunk_idx = 0
             options = available_ids(filtered_ids, new_ranges, chunk_idx)
@@ -206,10 +301,10 @@ def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
             )
             if options:
                 value = options[0]
-                episode_text, episode_table = show_episode(value)
+                episode_text, episode_table, gallery_items = show_episode(value)
             else:
                 value = None
-                episode_text, episode_table = show_episode("")
+                episode_text, episode_table, gallery_items = show_episode("")
             radio_update = gr.Radio.update(choices=options, value=value)
             return (
                 slider_update,
@@ -221,11 +316,12 @@ def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
                 new_ranges,
                 episode_text,
                 episode_table,
+                gallery_items,
             )
 
-        filter_slider.change(
+        apply_filter_btn.click(
             apply_filter,
-            inputs=filter_slider,
+            inputs=[min_filter, max_filter],
             outputs=[
                 chunk_slider,
                 chunk_label,
@@ -236,13 +332,14 @@ def build_demo(data: Dict[str, Dict], chunk_size: int) -> gr.Blocks:
                 chunk_ranges_state,
                 task_markdown,
                 frame_table,
+                image_gallery,
             ],
         )
 
         demo.load(
             show_episode,
             inputs=episode_selector,
-            outputs=[task_markdown, frame_table],
+            outputs=[task_markdown, frame_table, image_gallery],
         )
 
     return demo
@@ -252,6 +349,24 @@ def main():
     parser = argparse.ArgumentParser(description="Launch a Gradio portal for annotated episodes.")
     parser.add_argument("annotations", type=Path, help="Path to the JSON annotation file.")
     parser.add_argument("--chunk_size", type=int, default=40, help="Number of episode ids to show per chunk.")
+    parser.add_argument(
+        "--image_root",
+        type=Path,
+        default=None,
+        help="Root directory containing episode frame images (optional).",
+    )
+    parser.add_argument(
+        "--image_pattern",
+        type=str,
+        default=None,
+        help="Optional Python format string for frame images. Available keys: image_root, episode_id, frame_id.",
+    )
+    parser.add_argument(
+        "--manifest_csv",
+        type=Path,
+        default=None,
+        help="Optional CSV manifest (triplets) mapping change_point indices to image paths.",
+    )
     parser.add_argument("--share", action="store_true", help="Enable Gradio share mode if desired.")
     args = parser.parse_args()
 
@@ -259,7 +374,9 @@ def main():
         parser.error("--chunk_size must be positive")
 
     data = load_annotations(args.annotations)
-    demo = build_demo(data, args.chunk_size)
+    image_root = args.image_root.resolve() if args.image_root else None
+    manifest_lookup = load_manifest_lookup(args.manifest_csv)
+    demo = build_demo(data, args.chunk_size, image_root, args.image_pattern, manifest_lookup)
     demo.queue().launch(share=args.share)
 
 
