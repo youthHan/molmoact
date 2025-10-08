@@ -289,6 +289,11 @@ WANDB_API_KEY=<your_wandb_api_key> torchrun --nnodes=8 --nproc-per-node=8 \
 - To resume from a saved adapter, keep `--lora_enable` and add `--lora_load_path checkpoints/<exp_name>/stepXXXX-lora` when relaunching the job.
 - The launcher forwards this path so `scripts/train.py` restores the adapter weights before training continues.
 
+**Recovering LoRA adapters from merged checkpoints**
+- Keep a copy of the pre-LoRA checkpoint (mid-training) alongside the merged checkpoint produced after tuning.
+- Run `python3 scripts/extract_lora_from_merged.py <base_ckpt> <merged_ckpt> <output_dir> --lora-rank 32 --lora-alpha 16 --lora-dropout 0.0` (adjust the hyperparameters to match your run).
+- The script rebuilds the adapter weights and saves a PEFT-compatible directory in `<output_dir>`; point future runs at it via `--lora_load_path`.
+
 **Choose `<task_suite>` and `<steps>`**
 | `<task_suite>` | `<steps>` |
 |---|---|
