@@ -76,16 +76,25 @@ def load_manifest_lookup(path: Optional[Path]) -> Dict[Tuple[str, str], Manifest
         raise ValueError(f"Manifest CSV is missing columns: {', '.join(sorted(missing))}")
     base_dir = path.parent
     lookup: Dict[Tuple[str, str], ManifestEntry] = {}
+
+    prev_ep_id = None
     for _, row in df.iterrows():
         ep_id = str(row["episode_id"])
-        cp_key = normalize_change_point(row["change_point"])
+        if ep_id == prev_ep_id:
+            cur_cp_idx += 1
+        else:
+            cur_cp_idx = 0
+            prev_ep_id = ep_id
+        # cp_key = normalize_change_point(row["change_point"])
+        cp_key = normalize_change_point(cur_cp_idx)
         png_val = row["png"]
         if pd.isna(png_val):
             continue
         png_path = Path(str(png_val))
         base_for_entry: Optional[Path] = None
         if not png_path.is_absolute():
-            base_for_entry = base_dir
+            # base_for_entry = base_dir
+            pass
         else:
             png_path = png_path.resolve()
         lookup[(ep_id, cp_key)] = (str(png_path), base_for_entry)
@@ -149,7 +158,7 @@ def build_demo(
                     candidate_paths.append(fallback_path.resolve())
                 else:
                     candidate_paths.append((image_root / fallback_path).resolve())
-
+        print(candidate_paths)
         # Deduplicate paths while preserving order
         seen: set[str] = set()
         unique_paths: List[Path] = []
@@ -246,7 +255,7 @@ def build_demo(
         value = options[0]
         episode_text, episode_table, gallery_items = show_episode(value)
         return (
-            gr.Radio.update(choices=options, value=value),
+            gr.update(choices=options, value=value),
             chunk_text,
             episode_text,
             episode_table,
@@ -286,7 +295,7 @@ def build_demo(
                 apply_filter_btn = gr.Button("Apply filter", variant="primary")
 
             with gr.Column(scale=3):
-                distribution_plot = gr.Plot(value=render_distribution(initial_filtered_ids))
+                distribution_plot = gr.Plot(value=render_distribution(initial_filtered_ids), format="png")
                 distribution_summary_md = gr.Markdown(distribution_summary(initial_filtered_ids))
 
         with gr.Row():
@@ -332,7 +341,7 @@ def build_demo(
             chunk_idx = 0
             options = available_ids(filtered_ids, new_ranges, chunk_idx)
             chunk_text = describe_chunk(new_ranges, chunk_idx)
-            slider_update = gr.Slider.update(
+            slider_update = gr.update(
                 minimum=0,
                 maximum=max(new_total - 1, 0),
                 value=chunk_idx,
@@ -343,7 +352,7 @@ def build_demo(
             else:
                 value = None
                 episode_text, episode_table, gallery_items = show_episode("")
-            radio_update = gr.Radio.update(choices=options, value=value)
+            radio_update = gr.update(choices=options, value=value)
             return (
                 slider_update,
                 chunk_text,
