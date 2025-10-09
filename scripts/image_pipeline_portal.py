@@ -132,27 +132,54 @@ def _plot_patch_map(patch_idx: np.ndarray, show_ids: bool = False) -> np.ndarray
     return np.array(img)
 
 
-def _colorize_ids(ids: np.ndarray, cmap_name: str = "tab20") -> np.ndarray:
-    """Map integer ids (HxW) to RGB colors using a matplotlib colormap.
+def _colorize_ids(ids: np.ndarray, mode: str = "categorical") -> tuple[np.ndarray, np.ndarray]:
+    """Colorize integer ids (HxW) with high contrast.
 
-    - id < 0 → transparent black (returned as RGB but can be masked out)
-    - id >= 0 → colorized
+    - mode="categorical": map ids modulo a fixed bright palette (stable, vivid)
+    - mode="continuous": use a matplotlib colormap over the id rank (pastel)
+    Returns (rgb_image, valid_mask)
     """
-    import matplotlib.cm as cm
     ids = ids.astype(np.int64)
     valid = ids >= 0
-    # Normalize to [0, 1] based on unique id count (stable enough for visualization)
-    uniq = np.unique(ids[valid]) if np.any(valid) else np.array([0])
-    if uniq.size == 0:
-        uniq = np.array([0])
-    # Build a small LUT so colors are consistent within the image
-    lut = {v: i for i, v in enumerate(uniq.tolist())}
-    norm = np.zeros_like(ids, dtype=np.float32)
-    for v in uniq:
-        norm[ids == v] = lut[v] / max(1, len(uniq) - 1)
-    mapper = cm.get_cmap(cmap_name)
-    rgba = mapper(norm)  # HxW x 4 floats in [0,1]
-    rgb = (rgba[..., :3] * 255).astype(np.uint8)
+
+    if mode == "continuous":
+        import matplotlib.cm as cm
+        uniq = np.unique(ids[valid]) if np.any(valid) else np.array([0])
+        if uniq.size == 0:
+            uniq = np.array([0])
+        lut = {v: i for i, v in enumerate(uniq.tolist())}
+        norm = np.zeros_like(ids, dtype=np.float32)
+        denom = max(1, len(uniq) - 1)
+        for v in uniq:
+            norm[ids == v] = lut[v] / denom
+        mapper = cm.get_cmap("tab20")
+        rgba = mapper(norm)
+        rgb = (rgba[..., :3] * 255).astype(np.uint8)
+        return rgb, valid
+
+    # Categorical: fixed bright palette
+    palette = np.array([
+        [31, 119, 180],  # blue
+        [255, 127, 14],  # orange
+        [44, 160, 44],   # green
+        [214, 39, 40],   # red
+        [148, 103, 189], # purple
+        [140, 86, 75],   # brown
+        [227, 119, 194], # pink
+        [127, 127, 127], # gray
+        [188, 189, 34],  # olive
+        [23, 190, 207],  # cyan
+        [255, 99, 71],   # tomato
+        [60, 179, 113],  # mediumseagreen
+        [65, 105, 225],  # royalblue
+        [255, 215, 0],   # gold
+        [186, 85, 211],  # mediumorchid
+        [0, 191, 255],   # deepskyblue
+    ], dtype=np.uint8)
+    H, W = ids.shape
+    rgb = np.zeros((H, W, 3), dtype=np.uint8)
+    idx = np.mod(ids, len(palette))
+    rgb[valid] = palette[idx[valid]]
     return rgb, valid
 
 
@@ -322,6 +349,8 @@ def visualize_pipeline(
     encoder: str,
     show_grid: bool,
     show_ids: bool,
+    grid_alpha: float,
+    grid_thickness: int,
 ):
     if image is None:
         raise gr.Error("Please upload an image to visualize.")
@@ -368,9 +397,10 @@ def visualize_pipeline(
     )
 
     # Build overlays
+    # Color mode is categorical for high contrast
     canvas_overlay_coverage = _overlay_alpha(
         artifacts["canvas"],
-        _upsample_patch_colors(_colorize_ids(artifacts["patch_idx"])[0], artifacts["patch_size"]),
+        _upsample_patch_colors(_colorize_ids(artifacts["patch_idx"], mode="categorical")[0], artifacts["patch_size"]),
         alpha=0.35,
         mask=artifacts["canvas_mask"],
     )
@@ -380,23 +410,33 @@ def visualize_pipeline(
             artifacts["original"],
             artifacts["canvas"],
             artifacts["canvas_mask"],
-            _upsample_patch_colors(_colorize_ids(artifacts["patch_idx"])[0], artifacts["patch_size"]),
+            _upsample_patch_colors(_colorize_ids(artifacts["patch_idx"], mode="categorical")[0], artifacts["patch_size"]),
         ),
         alpha=0.35,
         mask=np.ones(artifacts["original"].shape[:2], dtype=bool),
     )
 
     if show_grid:
-        canvas_overlay_coverage = _draw_grid(canvas_overlay_coverage, artifacts["patch_size"], alpha=0.35)
+        canvas_overlay_coverage = _draw_grid(
+            canvas_overlay_coverage,
+            artifacts["patch_size"],
+            alpha=float(grid_alpha),
+            thickness=int(grid_thickness),
+        )
         # Approximate grid on original by resizing a grid from canvas
-        grid_canvas = _draw_grid(np.zeros_like(artifacts["canvas"]) + 1.0, artifacts["patch_size"], alpha=1.0)
+        grid_canvas = _draw_grid(
+            np.zeros_like(artifacts["canvas"]) + 1.0,
+            artifacts["patch_size"],
+            alpha=1.0,
+            thickness=int(grid_thickness),
+        )
         grid_on_original = _rescale_patch_overlay_to_original(
             artifacts["original"],
             artifacts["canvas"],
             artifacts["canvas_mask"],
             grid_canvas,
         )
-        original_overlay_coverage = _overlay_alpha(original_overlay_coverage, grid_on_original, alpha=0.35)
+        original_overlay_coverage = _overlay_alpha(original_overlay_coverage, grid_on_original, alpha=float(grid_alpha))
 
     return (
         original_img,
@@ -433,7 +473,10 @@ def build_demo() -> gr.Blocks:
                 )
                 with gr.Row():
                     show_grid = gr.Checkbox(value=False, label="Show patch grid")
-                    show_ids = gr.Checkbox(value=False, label="Show patch ids")
+                    show_ids = gr.Checkbox(value=False, label="Show patch ids (on map)")
+                with gr.Row():
+                    grid_alpha = gr.Slider(0.05, 0.6, value=0.2, step=0.05, label="Grid alpha")
+                    grid_thickness = gr.Slider(1, 3, value=1, step=1, label="Grid thickness (px)")
                 run_btn = gr.Button("Visualize", variant="primary")
             with gr.Column():
                 summary_box = gr.Markdown("Ready.")
@@ -453,7 +496,7 @@ def build_demo() -> gr.Blocks:
 
         run_btn.click(
             fn=visualize_pipeline,
-            inputs=[image_input, max_crops, overlap_margin, base_size, encoder_select, show_grid, show_ids],
+            inputs=[image_input, max_crops, overlap_margin, base_size, encoder_select, show_grid, show_ids, grid_alpha, grid_thickness],
             outputs=[
                 original,
                 canvas,
