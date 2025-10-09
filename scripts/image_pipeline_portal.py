@@ -42,11 +42,28 @@ def _to_uint8(image: np.ndarray) -> np.ndarray:
 
 
 def _overlay_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Overlay a red tint on padded/invalid pixels.
+
+    Accepts HxWx3 or 1xHxWx3 images; masks may be HxW, 1xHxW, HxWx1, or 1xHxWx1.
+    """
+    # Squeeze optional leading batch dim
+    if image.ndim == 4 and image.shape[0] == 1:
+        image = image[0]
+    if mask.ndim == 3 and mask.shape[0] == 1:
+        mask = mask[0]
     img = _to_uint8(image)
+    # Reduce mask to HxW boolean
+    if mask.ndim == 3 and mask.shape[-1] == 1:
+        mask = mask[..., 0]
     if mask.ndim == 2:
-        mask = mask[..., None]
-    mask = mask.astype(bool)
-    mask_3 = np.broadcast_to(mask, img.shape)
+        mask = mask.astype(bool)
+    else:
+        mask = mask.astype(bool)
+        # If mask already HxWxC, reduce via all-channels valid
+        if mask.ndim == 3:
+            mask = np.all(mask, axis=-1)
+    # Broadcast to 3 channels
+    mask_3 = np.broadcast_to(mask[..., None], img.shape)
     padded = ~mask_3
     tint = np.array([255, 0, 0], dtype=np.uint8)
     blended = (0.6 * img + 0.4 * tint).astype(np.uint8)
@@ -145,6 +162,11 @@ def extract_pipeline_artifacts(image: np.ndarray, cfg: PipelineConfig):
         cfg.pad_value,
         cfg.patch_size,
     )
+    # Squeeze batch dim introduced by build_resized_image
+    if global_resized.ndim == 4 and global_resized.shape[0] == 1:
+        global_resized = global_resized[0]
+    if global_mask.ndim == 3 and global_mask.shape[0] == 1:
+        global_mask = global_mask[0]
     global_resized = _denormalize_image(global_resized, cfg.normalize_mode)
     global_mask = global_mask.astype(bool)
 
