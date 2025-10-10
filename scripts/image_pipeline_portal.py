@@ -206,10 +206,10 @@ def _overlay_alpha(base: np.ndarray, overlay: np.ndarray, alpha: float, mask: np
 
 
 def _draw_grid(image: np.ndarray, cell: int, color=(255, 255, 255), alpha: float = 0.5, thickness: int = 1) -> np.ndarray:
-    """Overlay a grid with spacing `cell` pixels on top of image."""
+    """Overlay a grid with spacing `cell` pixels on top of image (no darkening between lines)."""
     img = _to_uint8(image)
     H, W = img.shape[:2]
-    grid = np.zeros_like(img)
+    grid = np.zeros_like(img, dtype=np.uint8)
     # Draw horizontal lines
     for y in range(0, H, cell):
         y0 = max(0, y - thickness // 2)
@@ -220,7 +220,8 @@ def _draw_grid(image: np.ndarray, cell: int, color=(255, 255, 255), alpha: float
         x0 = max(0, x - thickness // 2)
         x1 = min(W, x0 + max(1, thickness))
         grid[:, x0:x1, :] = color
-    return _overlay_alpha(img, grid, alpha=alpha)
+    mask = (grid.sum(axis=-1) > 0)
+    return _overlay_alpha(img, grid, alpha=alpha, mask=mask)
 
 
 def _pool_cell_boxes_from_patch_idx(
@@ -265,14 +266,15 @@ def _pool_cell_boxes_from_patch_idx(
 
 
 def _draw_boxes_overlay(image: np.ndarray, boxes: list[tuple[int, int, int, int]], color=(255, 255, 255), thickness: int = 2, alpha: float = 0.7) -> np.ndarray:
-    """Draw rectangle outlines on top of image with alpha blending."""
+    """Draw rectangle outlines on top of image with alpha blending (no darkening elsewhere)."""
     base = _to_uint8(image)
     overlay = Image.fromarray(np.zeros_like(base, dtype=np.uint8))
     draw = ImageDraw.Draw(overlay)
     for (x0, y0, x1, y1) in boxes:
         draw.rectangle((x0, y0, x1 - 1, y1 - 1), outline=tuple(color), width=max(1, int(thickness)))
     overlay_np = np.array(overlay)
-    return _overlay_alpha(base, overlay_np, alpha=alpha)
+    mask = (overlay_np.sum(axis=-1) > 0)
+    return _overlay_alpha(base, overlay_np, alpha=alpha, mask=mask)
 
 
 def _rescale_patch_overlay_to_original(
