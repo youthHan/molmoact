@@ -223,6 +223,58 @@ def _draw_grid(image: np.ndarray, cell: int, color=(255, 255, 255), alpha: float
     return _overlay_alpha(img, grid, alpha=alpha)
 
 
+def _pool_cell_boxes_from_patch_idx(
+    patch_idx: np.ndarray,
+    patch_size: int,
+    pool_h: int = 2,
+    pool_w: int = 2,
+) -> list[tuple[int, int, int, int]]:
+    """Compute pooling cell boxes (in pixels) aligned with 2D pooling on the canvas.
+
+    We mimic arange_for_pooling's symmetric padding by centering the patch grid to a
+    multiple of (pool_h, pool_w), then enumerating each pooling window. A cell is kept
+    if at least one patch in the window is valid (>=0).
+    """
+    H, W = patch_idx.shape
+    H_pad = pool_h * ((H + pool_h - 1) // pool_h)
+    W_pad = pool_w * ((W + pool_w - 1) // pool_w)
+    pad_top = (H_pad - H) // 2
+    pad_left = (W_pad - W) // 2
+
+    boxes: list[tuple[int, int, int, int]] = []
+    for r in range(0, H_pad, pool_h):
+        for c in range(0, W_pad, pool_w):
+            r0 = r - pad_top
+            c0 = c - pad_left
+            r1 = r0 + pool_h
+            c1 = c0 + pool_w
+            # Intersect with valid patch grid
+            rr0, rr1 = max(0, r0), min(H, r1)
+            cc0, cc1 = max(0, c0), min(W, c1)
+            if rr0 >= rr1 or cc0 >= cc1:
+                continue
+            sub = patch_idx[rr0:rr1, cc0:cc1]
+            if not np.any(sub >= 0):
+                continue
+            y0 = max(0, r0) * patch_size
+            x0 = max(0, c0) * patch_size
+            y1 = min(H, r1) * patch_size
+            x1 = min(W, c1) * patch_size
+            boxes.append((x0, y0, x1, y1))
+    return boxes
+
+
+def _draw_boxes_overlay(image: np.ndarray, boxes: list[tuple[int, int, int, int]], color=(255, 255, 255), thickness: int = 2, alpha: float = 0.7) -> np.ndarray:
+    """Draw rectangle outlines on top of image with alpha blending."""
+    base = _to_uint8(image)
+    overlay = Image.fromarray(np.zeros_like(base, dtype=np.uint8))
+    draw = ImageDraw.Draw(overlay)
+    for (x0, y0, x1, y1) in boxes:
+        draw.rectangle((x0, y0, x1 - 1, y1 - 1), outline=tuple(color), width=max(1, int(thickness)))
+    overlay_np = np.array(overlay)
+    return _overlay_alpha(base, overlay_np, alpha=alpha)
+
+
 def _rescale_patch_overlay_to_original(
     original: np.ndarray,
     canvas: np.ndarray,
@@ -351,6 +403,7 @@ def visualize_pipeline(
     show_ids: bool,
     grid_alpha: float,
     grid_thickness: int,
+    show_pool_cells: bool,
 ):
     if image is None:
         raise gr.Error("Please upload an image to visualize.")
@@ -438,6 +491,18 @@ def visualize_pipeline(
         )
         original_overlay_coverage = _overlay_alpha(original_overlay_coverage, grid_on_original, alpha=float(grid_alpha))
 
+    if show_pool_cells:
+        # Compute pooling boxes on canvas and draw; then map to original and draw
+        pool_boxes = _pool_cell_boxes_from_patch_idx(artifacts["patch_idx"], artifacts["patch_size"], 2, 2)
+        canvas_overlay_coverage = _draw_boxes_overlay(canvas_overlay_coverage, pool_boxes, color=(0, 255, 255), thickness=2, alpha=0.8)
+        # Build a blank overlay with boxes on canvas, then rescale to original
+        blank = np.zeros_like(artifacts["canvas"], dtype=np.uint8)
+        boxes_canvas = _draw_boxes_overlay(blank, pool_boxes, color=(0, 255, 255), thickness=2, alpha=1.0)
+        boxes_on_original = _rescale_patch_overlay_to_original(
+            artifacts["original"], artifacts["canvas"], artifacts["canvas_mask"], boxes_canvas
+        )
+        original_overlay_coverage = _overlay_alpha(original_overlay_coverage, boxes_on_original, alpha=0.8)
+
     return (
         original_img,
         canvas_img,
@@ -477,6 +542,7 @@ def build_demo() -> gr.Blocks:
                 with gr.Row():
                     grid_alpha = gr.Slider(0.05, 0.6, value=0.2, step=0.05, label="Grid alpha")
                     grid_thickness = gr.Slider(1, 3, value=1, step=1, label="Grid thickness (px)")
+                show_pool_cells = gr.Checkbox(value=False, label="Show pooling cells (2×2)")
                 run_btn = gr.Button("Visualize", variant="primary")
             with gr.Column():
                 summary_box = gr.Markdown("Ready.")
@@ -496,7 +562,7 @@ def build_demo() -> gr.Blocks:
 
         run_btn.click(
             fn=visualize_pipeline,
-            inputs=[image_input, max_crops, overlap_margin, base_size, encoder_select, show_grid, show_ids, grid_alpha, grid_thickness],
+            inputs=[image_input, max_crops, overlap_margin, base_size, encoder_select, show_grid, show_ids, grid_alpha, grid_thickness, show_pool_cells],
             outputs=[
                 original,
                 canvas,
