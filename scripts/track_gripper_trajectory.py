@@ -3,13 +3,15 @@
 The script wraps :class:`MolmoAct.gripper_tracking.dino_gripper_tracker.DINOGripperTracker`
 and exposes a simple workflow for trajectory recovery:
 
-1. Provide a frame sequence via ``--frames`` or ``--frames-dir`` + ``--pattern``.
+1. Provide frames either from parquet shards (``--parquet``) or individual files
+   via ``--frames`` / ``--frames-dir`` + ``--pattern``.
 2. Specify the gripper patch index in the seed frame with ``--initial-patch``.
 3. (Optional) Attach reference crops using ``--reference path=...,patch=...`` to
    bias the tracker when the gripper is occluded or visually ambiguous.
 
-Example (seed frame 0, two references, output JSON + overlays)::
+Examples::
 
+    # Directory-based frames
     python3 MolmoAct/scripts/track_gripper_trajectory.py \
         --frames-dir data/demos/run_01/frames --pattern "frame_*.png" \
         --initial-patch 187 \
@@ -18,21 +20,71 @@ Example (seed frame 0, two references, output JSON + overlays)::
         --output run_01_traj.json \
         --visualize-dir run_01_viz
 
-Run with ``--print-example`` to see the same template inside the CLI.
+    # Parquet-based frames
+    python3 MolmoAct/scripts/track_gripper_trajectory.py \
+        --parquet data/libero/run_01.parquet \
+        --parquet-image-column image \
+        --initial-patch 96 \
+        --output run_01_traj.json \
+        --visualize-dir run_01_viz
+
+Run with ``--print-example`` to see both templates inside the CLI.
 """
 from __future__ import annotations
 
 import argparse
+import glob
+import io
 import json
+import os
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 from PIL import Image, ImageDraw
 
 from MolmoAct.gripper_tracking import DINOGripperTracker, ReferencePatch, TrajectoryPoint
 
+try:  # Optional dependency for parquet reading
+    import pyarrow.parquet as pq
+except Exception:  # pragma: no cover - handled at runtime
+    pq = None
 
-def render_overlays(frames: Iterable[str], trajectory: Iterable[TrajectoryPoint], output_dir: Path) -> None:
+
+FrameInput = Union[str, Image.Image]
+
+
+def _to_pil_from_any(value: object) -> Image.Image:
+    """Best-effort conversion of parquet cell contents into a PIL image."""
+
+    if isinstance(value, Image.Image):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return Image.open(io.BytesIO(value)).convert("RGB")
+    if isinstance(value, memoryview):
+        return Image.open(io.BytesIO(value.tobytes())).convert("RGB")
+    if isinstance(value, str) and os.path.exists(value):
+        return Image.open(value).convert("RGB")
+    if isinstance(value, dict):
+        if value.get("path"):
+            return Image.open(value["path"]).convert("RGB")
+        if value.get("bytes") is not None:
+            return Image.open(io.BytesIO(value["bytes"])).convert("RGB")
+    try:  # optional numpy support for array-like columns
+        import numpy as np  # type: ignore
+
+        if isinstance(value, np.ndarray):
+            arr = value
+            if arr.dtype in (np.float32, np.float64):
+                arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
+            else:
+                arr = arr.astype(np.uint8)
+            return Image.fromarray(arr)
+    except Exception:  # pragma: no cover - numpy optional
+        pass
+    raise ValueError(f"Unsupported image container fetched from parquet: {type(value)!r}")
+
+
+def render_overlays(frames: Sequence[FrameInput], trajectory: Iterable[TrajectoryPoint], output_dir: Path) -> None:
     """Write per-frame overlays with the tracked coordinates.
 
     A small red circle shows the smoothed gripper position, yellow lines connect
@@ -42,32 +94,51 @@ def render_overlays(frames: Iterable[str], trajectory: Iterable[TrajectoryPoint]
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    frame_paths = list(frames)
+    frame_inputs: List[FrameInput] = list(frames)
     points_by_idx = {point.frame_idx: point for point in trajectory}
     previous_xy: Optional[Tuple[float, float]] = None
 
-    for local_idx, frame_path in enumerate(frame_paths):
+    for local_idx, frame_input in enumerate(frame_inputs):
         frame_id = local_idx
         point = points_by_idx.get(frame_id)
         if point is None:
             continue
+        current_xy = _point_to_tuple(point)
 
-        with Image.open(frame_path).convert("RGB") as img:
-            draw = ImageDraw.Draw(img)
-            x = point.smoothed_x if point.smoothed_x is not None else point.x
-            y = point.smoothed_y if point.smoothed_y is not None else point.y
-            radius = 8
-            bbox = (x - radius, y - radius, x + radius, y + radius)
-            draw.ellipse(bbox, outline=(255, 50, 50), width=3)
+        if isinstance(frame_input, str):
+            with Image.open(frame_input).convert("RGB") as img:
+                _draw_overlay(img, point, frame_id, previous_xy)
+                previous_xy = current_xy
+                out_path = output_dir / f"{frame_id:05d}.png"
+                img.save(out_path)
+        else:
+            img = frame_input.copy()
+            try:
+                _draw_overlay(img, point, frame_id, previous_xy)
+                previous_xy = current_xy
+                out_path = output_dir / f"{frame_id:05d}.png"
+                img.save(out_path)
+            finally:
+                img.close()
 
-            if previous_xy is not None:
-                draw.line((*previous_xy, x, y), fill=(255, 220, 0), width=2)
-            draw.text((x + radius + 2, y - radius - 2), f"{frame_id}", fill=(255, 255, 255))
 
-            previous_xy = (x, y)
+def _point_to_tuple(point: TrajectoryPoint) -> Tuple[float, float]:
+    x = point.smoothed_x if point.smoothed_x is not None else point.x
+    y = point.smoothed_y if point.smoothed_y is not None else point.y
+    return (x, y)
 
-            out_path = output_dir / f"{frame_id:05d}.png"
-            img.save(out_path)
+
+def _draw_overlay(img: Image.Image, point: TrajectoryPoint, frame_id: int, previous_xy: Optional[Tuple[float, float]]) -> None:
+    draw = ImageDraw.Draw(img)
+    x = point.smoothed_x if point.smoothed_x is not None else point.x
+    y = point.smoothed_y if point.smoothed_y is not None else point.y
+    radius = 8
+    bbox = (x - radius, y - radius, x + radius, y + radius)
+    draw.ellipse(bbox, outline=(255, 50, 50), width=3)
+
+    if previous_xy is not None:
+        draw.line((*previous_xy, x, y), fill=(255, 220, 0), width=2)
+    draw.text((x + radius + 2, y - radius - 2), f"{frame_id}", fill=(255, 255, 255))
 
 
 def parse_reference_arg(arg: str) -> ReferencePatch:
@@ -104,18 +175,108 @@ def parse_reference_arg(arg: str) -> ReferencePatch:
     )
 
 
-def collect_frames(args: argparse.Namespace) -> List[str]:
+def expand_parquet_inputs(tokens: Iterable[str]) -> List[Path]:
+    paths: List[Path] = []
+    for token in tokens:
+        expanded = os.path.expanduser(token)
+        candidate = Path(expanded)
+        if candidate.is_dir():
+            paths.extend(sorted(candidate.glob("*.parquet")))
+            continue
+        if candidate.is_file() and candidate.suffix == ".parquet":
+            paths.append(candidate)
+            continue
+        for match in glob.glob(expanded, recursive=True):
+            m_path = Path(match)
+            if m_path.is_file() and m_path.suffix == ".parquet":
+                paths.append(m_path)
+    unique = []
+    seen = set()
+    for path in sorted(paths):
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
+
+
+def load_parquet_frames(
+    parquet_tokens: Iterable[str],
+    image_column: str,
+    start_index: int = 0,
+    stop_index: Optional[int] = None,
+    max_frames: Optional[int] = None,
+) -> List[Image.Image]:
+    if pq is None:
+        raise RuntimeError("pyarrow is required when using --parquet inputs.")
+
+    parquet_files = expand_parquet_inputs(parquet_tokens)
+    if not parquet_files:
+        raise FileNotFoundError("No .parquet files found for the provided --parquet arguments")
+
+    frames: List[Image.Image] = []
+    global_index = 0
+    collected = 0
+    stop = stop_index if stop_index is not None else float("inf")
+
+    for path in parquet_files:
+        pq_file = pq.ParquetFile(path)
+        metadata = pq_file.metadata
+        num_row_groups = metadata.num_row_groups if metadata is not None else 1
+        for rg_idx in range(num_row_groups):
+            table = pq_file.read_row_group(rg_idx, columns=[image_column])
+            for row in table.to_pylist():
+                if global_index < start_index:
+                    global_index += 1
+                    continue
+                if global_index >= stop:
+                    return frames
+                if max_frames is not None and collected >= max_frames:
+                    return frames
+                value = row.get(image_column)
+                if value is None:
+                    raise ValueError(
+                        f"Row {global_index} in {path} is missing column '{image_column}'."
+                    )
+                frames.append(_to_pil_from_any(value))
+                collected += 1
+                global_index += 1
+            if global_index >= stop or (max_frames is not None and collected >= max_frames):
+                return frames
+
+    return frames
+
+
+def collect_frames(args: argparse.Namespace) -> List[FrameInput]:
+    if args.parquet:
+        if args.frames or args.frames_dir:
+            raise ValueError("When using --parquet, do not also provide --frames or --frames-dir")
+        frames = load_parquet_frames(
+            args.parquet,
+            image_column=args.parquet_image_column,
+            start_index=args.parquet_start,
+            stop_index=args.parquet_stop,
+            max_frames=args.max_frames,
+        )
+        if not frames:
+            raise RuntimeError("No frames extracted from parquet inputs")
+        return frames
+
     if args.frames:
-        return [str(Path(p)) for p in args.frames]
-    if not args.frames_dir:
-        raise ValueError("Either --frames or --frames-dir must be provided")
-    directory = Path(args.frames_dir)
-    if not directory.exists():
-        raise FileNotFoundError(f"Frame directory '{directory}' not found")
-    pattern = args.pattern or "*.png"
-    frames = sorted(str(path) for path in directory.glob(pattern))
-    if not frames:
-        raise FileNotFoundError(f"No frames matching pattern '{pattern}' in '{directory}'")
+        frames = [str(Path(p)) for p in args.frames]
+    else:
+        if not args.frames_dir:
+            raise ValueError("Either --frames, --frames-dir, or --parquet must be provided")
+        directory = Path(args.frames_dir)
+        if not directory.exists():
+            raise FileNotFoundError(f"Frame directory '{directory}' not found")
+        pattern = args.pattern or "*.png"
+        frames = sorted(str(path) for path in directory.glob(pattern))
+        if not frames:
+            raise FileNotFoundError(f"No frames matching pattern '{pattern}' in '{directory}'")
+
+    if args.max_frames is not None:
+        frames = frames[: args.max_frames]
     return frames
 
 
@@ -126,7 +287,36 @@ def main() -> None:
     )
     parser.add_argument("--frames", nargs="*", help="Explicit list of frame image paths (ordered)")
     parser.add_argument("--frames-dir", help="Directory containing frame images", default=None)
-    parser.add_argument("--pattern", help="Glob pattern for frames within --frames-dir (default: *.png)")
+    parser.add_argument("--pattern", help="Glob pattern for frames within --frames-dir (default: *.png)", default=None)
+    parser.add_argument(
+        "--parquet",
+        action="append",
+        default=[],
+        help="Parquet file(s), directories, or glob patterns providing frames",
+    )
+    parser.add_argument(
+        "--parquet-image-column",
+        default="image",
+        help="Column in the parquet rows that stores RGB frames (default: image)",
+    )
+    parser.add_argument(
+        "--parquet-start",
+        type=int,
+        default=0,
+        help="Inclusive start row index when reading from parquet",
+    )
+    parser.add_argument(
+        "--parquet-stop",
+        type=int,
+        default=None,
+        help="Exclusive stop row index when reading from parquet",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=None,
+        help="Optional cap on the number of frames processed",
+    )
     parser.add_argument("--initial-patch", type=int, required=True, help="Patch index for the seed frame")
     parser.add_argument("--initial-frame", type=int, default=0, help="Frame index for the seed patch")
     parser.add_argument(
@@ -159,16 +349,29 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.print_example:
-        example = (
-            "python3 MolmoAct/scripts/track_gripper_trajectory.py "
-            "--frames-dir demo/run_01/frames --pattern 'frame_*.png' "
-            "--initial-patch 187 "
-            "--reference path=refs/gripper_close.png,patch=42,weight=1.5,desc=closeup "
-            "--reference path=refs/gripper_side.png,patch=19,weight=0.8,start=10 "
-            "--weight-prev 1.0 --distance-penalty 0.02 --ema-alpha 0.3 "
-            "--output run_01_traj.json --visualize-dir run_01_viz"
-        )
-        print("Example command:\n" + example)
+        examples = [
+            (
+                "Directory frames",
+                "python3 MolmoAct/scripts/track_gripper_trajectory.py "
+                "--frames-dir demo/run_01/frames --pattern 'frame_*.png' "
+                "--initial-patch 187 "
+                "--reference path=refs/gripper_close.png,patch=42,weight=1.5,desc=closeup "
+                "--reference path=refs/gripper_side.png,patch=19,weight=0.8,start=10 "
+                "--weight-prev 1.0 --distance-penalty 0.02 --ema-alpha 0.3 "
+                "--output run_01_traj.json --visualize-dir run_01_viz",
+            ),
+            (
+                "Parquet frames",
+                "python3 MolmoAct/scripts/track_gripper_trajectory.py "
+                "--parquet data/libero/run_01.parquet "
+                "--parquet-image-column image "
+                "--parquet-start 0 --max-frames 300 "
+                "--initial-patch 96 "
+                "--output run_01_traj.json --visualize-dir run_01_viz",
+            ),
+        ]
+        for title, cmd in examples:
+            print(f"{title}:\n  {cmd}\n")
         return
     frames = collect_frames(args)
     references = [parse_reference_arg(spec) for spec in args.reference]
