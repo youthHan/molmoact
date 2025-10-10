@@ -406,6 +406,8 @@ def visualize_pipeline(
     grid_alpha: float,
     grid_thickness: int,
     show_pool_cells: bool,
+    pool_alpha: float,
+    pool_thickness: int,
 ):
     if image is None:
         raise gr.Error("Please upload an image to visualize.")
@@ -471,6 +473,31 @@ def visualize_pipeline(
         mask=np.ones(artifacts["original"].shape[:2], dtype=bool),
     )
 
+    # Draw pooling cells first (thin, low alpha), then grid (optional), so we don't obscure colors
+    if show_pool_cells:
+        pool_boxes = _pool_cell_boxes_from_patch_idx(artifacts["patch_idx"], artifacts["patch_size"], 2, 2)
+        canvas_overlay_coverage = _draw_boxes_overlay(
+            canvas_overlay_coverage,
+            pool_boxes,
+            color=(0, 255, 255),
+            thickness=int(pool_thickness),
+            alpha=float(pool_alpha),
+        )
+        blank = np.zeros_like(artifacts["canvas"], dtype=np.uint8)
+        boxes_canvas = _draw_boxes_overlay(
+            blank,
+            pool_boxes,
+            color=(0, 255, 255),
+            thickness=int(pool_thickness),
+            alpha=1.0,
+        )
+        boxes_on_original = _rescale_patch_overlay_to_original(
+            artifacts["original"], artifacts["canvas"], artifacts["canvas_mask"], boxes_canvas
+        )
+        original_overlay_coverage = _overlay_alpha(
+            original_overlay_coverage, boxes_on_original, alpha=float(pool_alpha)
+        )
+
     if show_grid:
         canvas_overlay_coverage = _draw_grid(
             canvas_overlay_coverage,
@@ -493,17 +520,6 @@ def visualize_pipeline(
         )
         original_overlay_coverage = _overlay_alpha(original_overlay_coverage, grid_on_original, alpha=float(grid_alpha))
 
-    if show_pool_cells:
-        # Compute pooling boxes on canvas and draw; then map to original and draw
-        pool_boxes = _pool_cell_boxes_from_patch_idx(artifacts["patch_idx"], artifacts["patch_size"], 2, 2)
-        canvas_overlay_coverage = _draw_boxes_overlay(canvas_overlay_coverage, pool_boxes, color=(0, 255, 255), thickness=2, alpha=0.8)
-        # Build a blank overlay with boxes on canvas, then rescale to original
-        blank = np.zeros_like(artifacts["canvas"], dtype=np.uint8)
-        boxes_canvas = _draw_boxes_overlay(blank, pool_boxes, color=(0, 255, 255), thickness=2, alpha=1.0)
-        boxes_on_original = _rescale_patch_overlay_to_original(
-            artifacts["original"], artifacts["canvas"], artifacts["canvas_mask"], boxes_canvas
-        )
-        original_overlay_coverage = _overlay_alpha(original_overlay_coverage, boxes_on_original, alpha=0.8)
 
     return (
         original_img,
@@ -545,6 +561,9 @@ def build_demo() -> gr.Blocks:
                     grid_alpha = gr.Slider(0.05, 0.6, value=0.2, step=0.05, label="Grid alpha")
                     grid_thickness = gr.Slider(1, 3, value=1, step=1, label="Grid thickness (px)")
                 show_pool_cells = gr.Checkbox(value=False, label="Show pooling cells (2×2)")
+                with gr.Row():
+                    pool_alpha = gr.Slider(0.05, 0.6, value=0.25, step=0.05, label="Pooling cell alpha")
+                    pool_thickness = gr.Slider(1, 3, value=1, step=1, label="Pooling cell thickness (px)")
                 run_btn = gr.Button("Visualize", variant="primary")
             with gr.Column():
                 summary_box = gr.Markdown("Ready.")
@@ -564,7 +583,7 @@ def build_demo() -> gr.Blocks:
 
         run_btn.click(
             fn=visualize_pipeline,
-            inputs=[image_input, max_crops, overlap_margin, base_size, encoder_select, show_grid, show_ids, grid_alpha, grid_thickness, show_pool_cells],
+            inputs=[image_input, max_crops, overlap_margin, base_size, encoder_select, show_grid, show_ids, grid_alpha, grid_thickness, show_pool_cells, pool_alpha, pool_thickness],
             outputs=[
                 original,
                 canvas,
