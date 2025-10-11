@@ -240,7 +240,19 @@ class DINOGripperTracker:
                 x = grid.xs[idx]
                 y = grid.ys[idx]
                 label = str(idx)
-                text_w, text_h = font.getsize(label)
+                try:
+                    text_w, text_h = font.getsize(label)  # Pillow < 10
+                except AttributeError:
+                    if hasattr(font, "getbbox"):
+                        bbox = font.getbbox(label)
+                        text_w = bbox[2] - bbox[0]
+                        text_h = bbox[3] - bbox[1]
+                    elif hasattr(draw, "textbbox"):
+                        bbox = draw.textbbox((0, 0), label, font=font)
+                        text_w = bbox[2] - bbox[0]
+                        text_h = bbox[3] - bbox[1]
+                    else:
+                        text_w, text_h = draw.textsize(label, font=font)
                 x0 = int(max(0, x - text_w / 2))
                 y0 = int(max(0, y - text_h / 2))
                 draw.rectangle((x0 - 1, y0 - 1, x0 + text_w + 1, y0 + text_h + 1), fill=(0, 0, 0))
