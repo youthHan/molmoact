@@ -16,7 +16,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from torchvision import transforms
 from transformers import AutoModel
 
@@ -175,6 +175,79 @@ class DINOGripperTracker:
             source_path=source_path,
         )
 
+    def render_patch_grid(
+        self,
+        image: Image.Image | str,
+        highlight_idx: Optional[int] = None,
+        annotate: bool = True,
+    ) -> Image.Image:
+        """Return an image with patch grid/indices overlaid for easier index lookup."""
+
+        owns_image = False
+        if isinstance(image, Image.Image):
+            pil_img = image if image.mode == "RGB" else image.convert("RGB")
+        else:
+            pil_img = Image.open(image).convert("RGB")
+            owns_image = True
+
+        try:
+            grid = self._encode_image(pil_img)
+            overlay = self._draw_patch_grid(pil_img, grid, highlight_idx=highlight_idx, annotate=annotate)
+        finally:
+            if owns_image:
+                pil_img.close()
+        return overlay
+
+    @staticmethod
+    def _draw_patch_grid(
+        pil_img: Image.Image,
+        grid: FramePatchGrid,
+        highlight_idx: Optional[int],
+        annotate: bool,
+    ) -> Image.Image:
+        canvas = pil_img.copy()
+        draw = ImageDraw.Draw(canvas)
+        width, height = canvas.size
+        ps = grid.patch_size
+
+        # Grid lines (clamped to original width/height)
+        for r in range(grid.rows + 1):
+            y = r * ps
+            if y > height:
+                y = height
+            draw.line((0, int(y), width, int(y)), fill=(255, 255, 0), width=1)
+        for c in range(grid.cols + 1):
+            x = c * ps
+            if x > width:
+                x = width
+            draw.line((int(x), 0, int(x), height), fill=(255, 255, 0), width=1)
+
+        # Highlight specific patch if requested
+        if highlight_idx is not None:
+            if 0 <= highlight_idx < grid.rows * grid.cols:
+                r, c = grid.idx_to_rc(highlight_idx)
+                x0 = max(0, c * ps)
+                y0 = max(0, r * ps)
+                x1 = min(width, (c + 1) * ps)
+                y1 = min(height, (r + 1) * ps)
+                draw.rectangle((x0, y0, x1, y1), outline=(255, 0, 0), width=3)
+
+        if annotate:
+            font = ImageFont.load_default()
+            for idx, valid in enumerate(grid.valid_mask):
+                if not valid:
+                    continue
+                x = grid.xs[idx]
+                y = grid.ys[idx]
+                label = str(idx)
+                text_w, text_h = font.getsize(label)
+                x0 = int(max(0, x - text_w / 2))
+                y0 = int(max(0, y - text_h / 2))
+                draw.rectangle((x0 - 1, y0 - 1, x0 + text_w + 1, y0 + text_h + 1), fill=(0, 0, 0))
+                draw.text((x0, y0), label, fill=(255, 255, 255), font=font)
+
+        return canvas
+
     def encode_frames(self, frames: Sequence[Image.Image | str]) -> List[FramePatchGrid]:
         """Convert each frame to a patch grid."""
         grids: List[FramePatchGrid] = []
@@ -188,6 +261,8 @@ class DINOGripperTracker:
                 source_path = str(frame)
             grid = self._encode_image(pil_img, source_path=source_path)
             grids.append(grid)
+            if not isinstance(frame, Image.Image):
+                pil_img.close()
         return grids
 
     def _encode_reference(self, ref: ReferencePatch) -> Tuple[np.ndarray, str]:
