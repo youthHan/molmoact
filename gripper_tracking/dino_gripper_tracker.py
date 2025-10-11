@@ -206,21 +206,19 @@ class DINOGripperTracker:
         annotate: bool,
     ) -> Image.Image:
         canvas = pil_img.copy()
-        draw = ImageDraw.Draw(canvas)
+        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
         width, height = canvas.size
         ps = grid.patch_size
 
         # Grid lines (clamped to original width/height)
+        grid_color = (255, 255, 0, 120)
         for r in range(grid.rows + 1):
-            y = r * ps
-            if y > height:
-                y = height
-            draw.line((0, int(y), width, int(y)), fill=(255, 255, 0), width=1)
+            y = min(r * ps, height)
+            draw.line((0, int(y), width, int(y)), fill=grid_color, width=1)
         for c in range(grid.cols + 1):
-            x = c * ps
-            if x > width:
-                x = width
-            draw.line((int(x), 0, int(x), height), fill=(255, 255, 0), width=1)
+            x = min(c * ps, width)
+            draw.line((int(x), 0, int(x), height), fill=grid_color, width=1)
 
         # Highlight specific patch if requested
         if highlight_idx is not None:
@@ -230,7 +228,7 @@ class DINOGripperTracker:
                 y0 = max(0, r * ps)
                 x1 = min(width, (c + 1) * ps)
                 y1 = min(height, (r + 1) * ps)
-                draw.rectangle((x0, y0, x1, y1), outline=(255, 0, 0), width=3)
+                draw.rectangle((x0, y0, x1, y1), outline=(255, 0, 0, 200), width=3)
 
         if annotate:
             font = ImageFont.load_default()
@@ -259,13 +257,15 @@ class DINOGripperTracker:
                 draw.text(
                     (x, y),
                     label,
-                    fill=(255, 255, 255),
+                    fill=(255, 255, 255, 230),
                     font=font,
-                    stroke_width=1,
-                    stroke_fill=(0, 0, 0),
+                    stroke_width=2,
+                    stroke_fill=(0, 0, 0, 230),
                 )
 
-        return canvas
+        canvas = canvas.convert("RGBA")
+        canvas.alpha_composite(overlay)
+        return canvas.convert("RGB")
 
     def encode_frames(self, frames: Sequence[Image.Image | str]) -> List[FramePatchGrid]:
         """Convert each frame to a patch grid."""
