@@ -234,29 +234,36 @@ class DINOGripperTracker:
 
         if annotate:
             font = ImageFont.load_default()
-            for idx, valid in enumerate(grid.valid_mask):
-                if not valid:
-                    continue
-                x = grid.xs[idx]
-                y = grid.ys[idx]
-                label = str(idx)
+
+            def measure(label: str) -> Tuple[int, int]:
                 try:
-                    text_w, text_h = font.getsize(label)  # Pillow < 10
+                    w, h = font.getsize(label)  # Pillow < 10
+                    return int(w), int(h)
                 except AttributeError:
                     if hasattr(font, "getbbox"):
                         bbox = font.getbbox(label)
-                        text_w = bbox[2] - bbox[0]
-                        text_h = bbox[3] - bbox[1]
-                    elif hasattr(draw, "textbbox"):
+                        return int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+                    if hasattr(draw, "textbbox"):
                         bbox = draw.textbbox((0, 0), label, font=font)
-                        text_w = bbox[2] - bbox[0]
-                        text_h = bbox[3] - bbox[1]
-                    else:
-                        text_w, text_h = draw.textsize(label, font=font)
-                x0 = int(max(0, x - text_w / 2))
-                y0 = int(max(0, y - text_h / 2))
-                draw.rectangle((x0 - 1, y0 - 1, x0 + text_w + 1, y0 + text_h + 1), fill=(0, 0, 0))
-                draw.text((x0, y0), label, fill=(255, 255, 255), font=font)
+                        return int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+                    w, h = draw.textsize(label, font=font)
+                    return int(w), int(h)
+
+            for idx, valid in enumerate(grid.valid_mask):
+                if not valid:
+                    continue
+                label = str(idx)
+                text_w, text_h = measure(label)
+                x = int(grid.xs[idx] - text_w / 2)
+                y = int(grid.ys[idx] - text_h / 2)
+                draw.text(
+                    (x, y),
+                    label,
+                    fill=(255, 255, 255),
+                    font=font,
+                    stroke_width=1,
+                    stroke_fill=(0, 0, 0),
+                )
 
         return canvas
 
