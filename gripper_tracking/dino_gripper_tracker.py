@@ -257,10 +257,10 @@ class DINOGripperTracker:
                 draw.text(
                     (x, y),
                     label,
-                    fill=(255, 255, 255, 230),
+                    fill=(255, 255, 0, 240),
                     font=font,
                     stroke_width=2,
-                    stroke_fill=(0, 0, 0, 230),
+                    stroke_fill=(0, 0, 0, 200),
                 )
 
         canvas = canvas.convert("RGBA")
