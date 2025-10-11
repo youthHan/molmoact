@@ -28,6 +28,13 @@ Examples::
         --output run_01_traj.json \
         --visualize-dir run_01_viz
 
+    # Dump patch indices for frame 0 and a reference crop, then exit
+    python3 MolmoAct/scripts/track_gripper_trajectory.py \
+        --frames-dir data/demos/run_01/frames \
+        --grid-frame frame=0,out=run_01_frame0_grid.png \
+        --grid-reference path=refs/gripper_close.png,out=ref_grid.png \
+        --grid-only
+
 Run with ``--print-example`` to see both templates inside the CLI.
 """
 from __future__ import annotations
@@ -37,8 +44,9 @@ import glob
 import io
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from PIL import Image, ImageDraw
 
@@ -65,10 +73,10 @@ def _to_pil_from_any(value: object) -> Image.Image:
     if isinstance(value, str) and os.path.exists(value):
         return Image.open(value).convert("RGB")
     if isinstance(value, dict):
-        if value.get("path"):
-            return Image.open(value["path"]).convert("RGB")
         if value.get("bytes") is not None:
             return Image.open(io.BytesIO(value["bytes"])).convert("RGB")
+        if value.get("path"):
+            return Image.open(value["path"]).convert("RGB")
     try:  # optional numpy support for array-like columns
         import numpy as np  # type: ignore
 
@@ -141,16 +149,22 @@ def _draw_overlay(img: Image.Image, point: TrajectoryPoint, frame_id: int, previ
     draw.text((x + radius + 2, y - radius - 2), f"{frame_id}", fill=(255, 255, 255))
 
 
-def parse_reference_arg(arg: str) -> ReferencePatch:
-    """Parse reference spec of the form key=value,key=value."""
-    parts = {}
+def parse_kv_string(arg: str) -> Dict[str, str]:
+    parts: Dict[str, str] = {}
     for item in arg.split(","):
+        item = item.strip()
         if not item:
             continue
         if "=" not in item:
-            raise ValueError(f"Reference segment '{item}' must look like key=value")
+            raise ValueError(f"Segment '{item}' must look like key=value")
         key, value = item.split("=", 1)
         parts[key.strip()] = value.strip()
+    return parts
+
+
+def parse_reference_arg(arg: str) -> ReferencePatch:
+    """Parse reference spec of the form key=value,key=value."""
+    parts = parse_kv_string(arg)
 
     if "patch" not in parts:
         raise ValueError("Reference spec must provide 'patch=<idx>'")
@@ -173,6 +187,35 @@ def parse_reference_arg(arg: str) -> ReferencePatch:
         end_frame=end_frame,
         description=description,
     )
+
+
+@dataclass
+class GridDumpSpec:
+    kind: str  # 'frame' or 'path'
+    output: Path
+    frame_idx: Optional[int] = None
+    path: Optional[str] = None
+    highlight: Optional[int] = None
+
+
+def parse_grid_frame_arg(arg: str) -> GridDumpSpec:
+    parts = parse_kv_string(arg)
+    if "frame" not in parts or "out" not in parts:
+        raise ValueError("Grid frame spec requires 'frame=<idx>,out=<path>'")
+    frame_idx = int(parts["frame"])
+    output = Path(parts["out"])
+    highlight = int(parts["highlight"]) if "highlight" in parts else None
+    return GridDumpSpec(kind="frame", output=output, frame_idx=frame_idx, highlight=highlight)
+
+
+def parse_grid_reference_arg(arg: str) -> GridDumpSpec:
+    parts = parse_kv_string(arg)
+    if "path" not in parts or "out" not in parts:
+        raise ValueError("Grid reference spec requires 'path=<image>,out=<path>'")
+    path = parts["path"]
+    output = Path(parts["out"])
+    highlight = int(parts["highlight"]) if "highlight" in parts else None
+    return GridDumpSpec(kind="path", output=output, path=path, highlight=highlight)
 
 
 def expand_parquet_inputs(tokens: Iterable[str]) -> List[Path]:
@@ -280,6 +323,31 @@ def collect_frames(args: argparse.Namespace) -> List[FrameInput]:
     return frames
 
 
+def dump_patch_grids(
+    tracker: DINOGripperTracker,
+    frames: Sequence[FrameInput],
+    frame_specs: Sequence[GridDumpSpec],
+    reference_specs: Sequence[GridDumpSpec],
+    annotate: bool,
+) -> None:
+    for spec in frame_specs:
+        assert spec.frame_idx is not None
+        if spec.frame_idx < 0 or spec.frame_idx >= len(frames):
+            raise IndexError(f"--grid-frame index {spec.frame_idx} is out of bounds (len={len(frames)})")
+        frame_input = frames[spec.frame_idx]
+        spec.output.parent.mkdir(parents=True, exist_ok=True)
+        overlay = tracker.render_patch_grid(frame_input, highlight_idx=spec.highlight, annotate=annotate)
+        overlay.save(spec.output)
+        overlay.close()
+
+    for spec in reference_specs:
+        assert spec.path is not None
+        spec.output.parent.mkdir(parents=True, exist_ok=True)
+        overlay = tracker.render_patch_grid(spec.path, highlight_idx=spec.highlight, annotate=annotate)
+        overlay.save(spec.output)
+        overlay.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Track gripper trajectory using DINO patch similarities",
@@ -317,6 +385,28 @@ def main() -> None:
         default=None,
         help="Optional cap on the number of frames processed",
     )
+    parser.add_argument(
+        "--grid-frame",
+        action="append",
+        default=[],
+        help="Dump patch grid for a frame: frame=<idx>,out=<path>[,highlight=<idx>]",
+    )
+    parser.add_argument(
+        "--grid-reference",
+        action="append",
+        default=[],
+        help="Dump patch grid for an image file: path=<img>,out=<path>[,highlight=<idx>]",
+    )
+    parser.add_argument(
+        "--grid-only",
+        action="store_true",
+        help="Generate requested patch grids and exit without tracking",
+    )
+    parser.add_argument(
+        "--grid-hide-indices",
+        action="store_true",
+        help="Skip numeric annotations when dumping patch grids",
+    )
     parser.add_argument("--initial-patch", type=int, required=True, help="Patch index for the seed frame")
     parser.add_argument("--initial-frame", type=int, default=0, help="Frame index for the seed patch")
     parser.add_argument(
@@ -348,6 +438,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    grid_frame_specs = [parse_grid_frame_arg(spec) for spec in args.grid_frame]
+    grid_reference_specs = [parse_grid_reference_arg(spec) for spec in args.grid_reference]
+
     if args.print_example:
         examples = [
             (
@@ -378,6 +471,18 @@ def main() -> None:
     ema_alpha = None if args.ema_alpha < 0 else args.ema_alpha
 
     tracker = DINOGripperTracker(model_id=args.model_id)
+
+    if grid_frame_specs or grid_reference_specs:
+        dump_patch_grids(
+            tracker,
+            frames,
+            grid_frame_specs,
+            grid_reference_specs,
+            annotate=not args.grid_hide_indices,
+        )
+        if args.grid_only:
+            return
+
     trajectory = tracker.track(
         frames=frames,
         initial_patch_idx=args.initial_patch,
