@@ -9,7 +9,8 @@ Usage example::
     python3 MolmoAct/scripts/segment_tracked_trajectory.py \
         --trajectory run_01_traj.json \
         --shift-threshold 60 --steady-window 6 \
-        --steady-threshold 4 --steady-outliers 1 \
+        --steady-threshold 4 --anchor-threshold 6 \
+        --steady-outliers 1 \
         --min-gap 40 --output run_01_segments.json
 
 Detection heuristic:
@@ -18,7 +19,8 @@ Detection heuristic:
 2. Mark a frame as a candidate boundary when the displacement from the
    previous frame exceeds ``--shift-threshold``.
 3. Confirm a boundary only if the next ``--steady-window`` frames remain mostly
-   stable (per-frame displacement <= ``--steady-threshold``). A small number of
+   stable (per-frame displacement <= ``--steady-threshold``) *and* stay close to
+   the candidate frame (distance <= ``--anchor-threshold``). A small number of
    spikes can be tolerated via ``--steady-outliers``.
 
 Confirmed boundaries split the trajectory into contiguous segments. Each
@@ -50,7 +52,7 @@ class TrajectoryPoint:
         sx = data.get("smoothed_x")
         sy = data.get("smoothed_y")
         return cls(
-            frame_idx=int(data["total_frame_idx"]),
+            frame_idx=int(data["frame_idx"]),
             patch_idx=int(data["patch_idx"]),
             x=float(data["x"]),
             y=float(data["y"]),
@@ -96,6 +98,7 @@ def detect_boundaries(
     steady_window: int,
     steady_threshold: float,
     steady_outliers: int,
+    anchor_threshold: float,
     min_gap: int,
 ) -> List[int]:
     if len(traj) < 2:
@@ -114,7 +117,9 @@ def detect_boundaries(
                 if idx >= len(traj):
                     window_ok = False
                     break
-                if displacement(traj[idx - 1], traj[idx]) > steady_threshold:
+                step_delta = displacement(traj[idx - 1], traj[idx])
+                anchor_delta = displacement(traj[i], traj[idx])
+                if step_delta > steady_threshold or anchor_delta > anchor_threshold:
                     outliers += 1
                     if outliers > steady_outliers:
                         window_ok = False
@@ -160,6 +165,12 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Number of allowable spikes above the steady threshold inside the window",
     )
+    parser.add_argument(
+        "--anchor-threshold",
+        type=float,
+        default=5.0,
+        help="Max distance from the candidate frame within the steady window",
+    )
     parser.add_argument("--min-gap", type=int, default=30, help="Minimum frames between restart boundaries")
     parser.add_argument("--output", help="Optional path to write segments JSON")
     return parser.parse_args()
@@ -179,6 +190,7 @@ def main() -> None:
         steady_window=args.steady_window,
         steady_threshold=args.steady_threshold,
         steady_outliers=args.steady_outliers,
+        anchor_threshold=args.anchor_threshold,
         min_gap=args.min_gap,
     )
     segments = build_segments(boundaries, len(traj))
@@ -190,6 +202,8 @@ def main() -> None:
             "shift_threshold": args.shift_threshold,
             "steady_window": args.steady_window,
             "steady_threshold": args.steady_threshold,
+            "steady_outliers": args.steady_outliers,
+            "anchor_threshold": args.anchor_threshold,
             "min_gap": args.min_gap,
             "segments": [seg.to_dict() for seg in segments],
         }
