@@ -10,7 +10,8 @@ Usage example::
         --trajectory run_01_traj.json \
         --shift-threshold 60 --steady-window 6 \
         --steady-threshold 4 --anchor-threshold 6 \
-        --steady-outliers 1 \
+        --steady-outliers 1 --history-window 6 \
+        --history-threshold 6 --history-outliers 0 \
         --min-gap 40 --output run_01_segments.json
 
 Detection heuristic:
@@ -22,6 +23,9 @@ Detection heuristic:
    stable (per-frame displacement <= ``--steady-threshold``) *and* stay close to
    the candidate frame (distance <= ``--anchor-threshold``). A small number of
    spikes can be tolerated via ``--steady-outliers``.
+4. Reject a boundary if the candidate frame is still close to the preceding
+   ``--history-window`` frames (distance <= ``--history-threshold``). This
+   prevents short bursts of outliers from cutting a long segment.
 
 Confirmed boundaries split the trajectory into contiguous segments. Each
 segment can optionally be written to JSON or summarized on stdout.
@@ -117,6 +121,9 @@ def detect_boundaries(
     steady_threshold: float,
     steady_outliers: int,
     anchor_threshold: float,
+    history_window: int,
+    history_threshold: float,
+    history_outliers: int,
     min_gap: int,
 ) -> List[int]:
     if len(traj) < 2:
@@ -127,6 +134,22 @@ def detect_boundaries(
     while i < len(traj):
         step = displacement(traj[i - 1], traj[i])
         if step >= shift_threshold:
+            # Ensure candidate differs from preceding history
+            history_ok = True
+            similar = 0
+            for j in range(1, history_window + 1):
+                prev_idx = i - j
+                if prev_idx < 0:
+                    break
+                if displacement(traj[prev_idx], traj[i]) <= history_threshold:
+                    similar += 1
+                    if similar > history_outliers:
+                        history_ok = False
+                        break
+            if not history_ok:
+                i += 1
+                continue
+
             # Check steady window
             window_ok = True
             outliers = 0
@@ -211,6 +234,24 @@ def parse_args() -> argparse.Namespace:
         default=5.0,
         help="Max distance from the candidate frame within the steady window",
     )
+    parser.add_argument(
+        "--history-window",
+        type=int,
+        default=5,
+        help="Frames before the candidate that must differ from the candidate",
+    )
+    parser.add_argument(
+        "--history-threshold",
+        type=float,
+        default=6.0,
+        help="Maximum distance considered 'similar' to preceding history",
+    )
+    parser.add_argument(
+        "--history-outliers",
+        type=int,
+        default=0,
+        help="Allowed number of history frames still close to the candidate",
+    )
     parser.add_argument("--min-gap", type=int, default=30, help="Minimum frames between restart boundaries")
     parser.add_argument("--output", help="Optional path to write segments JSON")
     return parser.parse_args()
@@ -231,6 +272,9 @@ def main() -> None:
         steady_threshold=args.steady_threshold,
         steady_outliers=args.steady_outliers,
         anchor_threshold=args.anchor_threshold,
+        history_window=args.history_window,
+        history_threshold=args.history_threshold,
+        history_outliers=args.history_outliers,
         min_gap=args.min_gap,
     )
     segments = build_segments(boundaries, traj)
@@ -244,6 +288,9 @@ def main() -> None:
             "steady_threshold": args.steady_threshold,
             "steady_outliers": args.steady_outliers,
             "anchor_threshold": args.anchor_threshold,
+            "history_window": args.history_window,
+            "history_threshold": args.history_threshold,
+            "history_outliers": args.history_outliers,
             "min_gap": args.min_gap,
             "segments": [seg.to_dict() for seg in segments],
         }
