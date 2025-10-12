@@ -52,7 +52,7 @@ class TrajectoryPoint:
         sx = data.get("smoothed_x")
         sy = data.get("smoothed_y")
         return cls(
-            frame_idx=int(data["frame_idx"]),
+            frame_idx=int(data["total_frame_idx"]),
             patch_idx=int(data["patch_idx"]),
             x=float(data["x"]),
             y=float(data["y"]),
