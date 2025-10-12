@@ -25,6 +25,7 @@ Examples::
         --parquet data/libero/run_01.parquet \
         --parquet-image-column image \
         --initial-patch 96 \
+        --disable-history --initial-reference-weight 1.0 \
         --output run_01_traj.json \
         --visualize-dir run_01_viz
 
@@ -407,6 +408,17 @@ def main() -> None:
         action="store_true",
         help="Skip numeric annotations when dumping patch grids",
     )
+    parser.add_argument(
+        "--disable-history",
+        action="store_true",
+        help="Ignore previous-frame similarity during matching",
+    )
+    parser.add_argument(
+        "--initial-reference-weight",
+        type=float,
+        default=0.0,
+        help="Weight for treating the initial frame patch as a static reference",
+    )
     parser.add_argument("--initial-patch", type=int, required=True, help="Patch index for the seed frame")
     parser.add_argument("--initial-frame", type=int, default=0, help="Frame index for the seed patch")
     parser.add_argument(
@@ -459,7 +471,7 @@ def main() -> None:
                 "--parquet data/libero/run_01.parquet "
                 "--parquet-image-column image "
                 "--parquet-start 0 --max-frames 300 "
-                "--initial-patch 96 "
+                "--initial-patch 96 --disable-history --initial-reference-weight 1.0 "
                 "--output run_01_traj.json --visualize-dir run_01_viz",
             ),
         ]
@@ -491,6 +503,8 @@ def main() -> None:
         weight_prev=args.weight_prev,
         distance_penalty=args.distance_penalty,
         ema_alpha=ema_alpha,
+        use_history_similarity=not args.disable_history,
+        initial_reference_weight=args.initial_reference_weight,
     )
 
     if args.output:

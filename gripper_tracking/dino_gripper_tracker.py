@@ -306,6 +306,8 @@ class DINOGripperTracker:
         weight_prev: float = 1.0,
         distance_penalty: float = 0.0,
         ema_alpha: Optional[float] = 0.3,
+        use_history_similarity: bool = True,
+        initial_reference_weight: float = 0.0,
     ) -> List[TrajectoryPoint]:
         """Track the gripper patch across `frames`.
 
@@ -317,6 +319,8 @@ class DINOGripperTracker:
             weight_prev: Weight applied to similarity against the previous frame patch.
             distance_penalty: Multiplier applied to Euclidean distance penalty (pixels).
             ema_alpha: Optional decay for exponential smoothing in pixel space (None disables).
+            use_history_similarity: When False, ignore similarity to the previous frame.
+            initial_reference_weight: If >0, treat the initial frame patch as a static reference with this weight.
         """
         if initial_frame_idx != 0:
             raise NotImplementedError("Tracking currently expects initial_frame_idx=0.")
@@ -337,23 +341,41 @@ class DINOGripperTracker:
                 embedding, label = self._encode_reference(ref)
                 ref_embeddings.append((embedding, ref, label))
 
+        static_refs: List[Tuple[np.ndarray, float, str]] = []
+        if initial_reference_weight > 0.0:
+            static_refs.append(
+                (
+                    initial_grid.normalized[initial_patch_idx],
+                    initial_reference_weight,
+                    f"initial_patch@{initial_patch_idx}",
+                )
+            )
+
         trajectory: List[TrajectoryPoint] = []
         prev_idx = int(initial_patch_idx)
         prev_grid = initial_grid
-        prev_embedding = prev_grid.normalized[prev_idx]
+        use_history = use_history_similarity and weight_prev != 0.0
+        prev_embedding = prev_grid.normalized[prev_idx] if use_history else None
         prev_x, prev_y = prev_grid.idx_to_xy(prev_idx)
         smooth_x = prev_x
         smooth_y = prev_y
 
         labels = [label for _, _, label in ref_embeddings]
+        labels.extend(label for _, _, label in static_refs)
+        initial_ref_scores = {}
+        for label in labels:
+            if label.startswith("initial_patch"):
+                initial_ref_scores[label] = 1.0
+            else:
+                initial_ref_scores[label] = 0.0
         initial_point = TrajectoryPoint(
             frame_idx=initial_frame_idx,
             patch_idx=prev_idx,
             x=prev_x,
             y=prev_y,
-            score=weight_prev,
-            similarity_prev=1.0,
-            similarity_refs={label: 0.0 for label in labels},
+            score=weight_prev if use_history else initial_reference_weight,
+            similarity_prev=1.0 if use_history else 0.0,
+            similarity_refs=initial_ref_scores,
             smoothed_x=smooth_x,
             smoothed_y=smooth_y,
         )
@@ -361,9 +383,18 @@ class DINOGripperTracker:
 
         for frame_idx in range(initial_frame_idx + 1, len(grids)):
             grid = grids[frame_idx]
-            sims_prev = grid.normalized @ prev_embedding
-            total_score = weight_prev * sims_prev
+            if use_history and prev_embedding is not None:
+                sims_prev = grid.normalized @ prev_embedding
+                total_score = weight_prev * sims_prev
+            else:
+                sims_prev = np.zeros(grid.normalized.shape[0], dtype=np.float32)
+                total_score = np.zeros_like(sims_prev)
             ref_details: List[Tuple[str, float, np.ndarray]] = []
+
+            for embedding, weight, label in static_refs:
+                sims_static = grid.normalized @ embedding
+                total_score += weight * sims_static
+                ref_details.append((label, weight, sims_static))
 
             for embedding, ref, label in ref_embeddings:
                 if frame_idx < ref.start_frame:
@@ -385,11 +416,12 @@ class DINOGripperTracker:
                 raise RuntimeError(f"No valid patch candidates for frame {frame_idx}.")
             best_idx = int(np.argmax(total_score))
             best_score = float(total_score[best_idx])
-            best_sim_prev = float(sims_prev[best_idx])
+            best_sim_prev = float(sims_prev[best_idx]) if use_history else 0.0
 
             prev_idx = best_idx
             prev_grid = grid
-            prev_embedding = grid.normalized[best_idx]
+            if use_history:
+                prev_embedding = grid.normalized[best_idx]
             prev_x, prev_y = grid.idx_to_xy(best_idx)
 
             if ema_alpha is not None:
