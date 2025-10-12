@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 try:
     import imageio.v2 as imageio
