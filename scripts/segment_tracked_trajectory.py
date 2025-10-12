@@ -32,33 +32,41 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 import math
 
 
 @dataclass
 class TrajectoryPoint:
-    frame_idx: int
+    frame_idx: int  # local row index within a parquet shard
+    total_frame_idx: int  # global row index across concatenated shards
     patch_idx: int
     x: float
     y: float
     score: float
     smoothed_x: float
     smoothed_y: float
+    parquet_idx: Optional[int]
 
     @classmethod
     def from_raw(cls, data: dict) -> "TrajectoryPoint":
         sx = data.get("smoothed_x")
         sy = data.get("smoothed_y")
+        frame_idx = int(data.get("frame_idx", 0))
+        total_idx = int(data.get("total_frame_idx", frame_idx))
+        parquet_idx = data.get("parquet_idx")
+        parquet_idx = int(parquet_idx) if parquet_idx is not None else None
         return cls(
-            frame_idx=int(data["total_frame_idx"]),
+            frame_idx=frame_idx,
+            total_frame_idx=total_idx,
             patch_idx=int(data["patch_idx"]),
             x=float(data["x"]),
             y=float(data["y"]),
             score=float(data.get("score", 0.0)),
             smoothed_x=float(sx if sx is not None else data["x"]),
             smoothed_y=float(sy if sy is not None else data["y"]),
+            parquet_idx=parquet_idx,
         )
 
     def position(self) -> tuple[float, float]:
@@ -67,15 +75,25 @@ class TrajectoryPoint:
 
 @dataclass
 class Segment:
-    start_frame: int
-    end_frame: int
+    start_index: int  # index within trajectory list
+    end_index: int
     length: int
+    start_total_frame: int
+    end_total_frame: int
+    start_local_frame: int
+    end_local_frame: int
+    parquet_idx: Optional[int]
 
     def to_dict(self) -> dict:
         return {
-            "start_frame": self.start_frame,
-            "end_frame": self.end_frame,
+            "start_index": self.start_index,
+            "end_index": self.end_index,
             "length": self.length,
+            "start_total_frame": self.start_total_frame,
+            "end_total_frame": self.end_total_frame,
+            "start_frame": self.start_local_frame,
+            "end_frame": self.end_local_frame,
+            "parquet_idx": self.parquet_idx,
         }
 
 
@@ -133,19 +151,41 @@ def detect_boundaries(
     return boundaries
 
 
-def build_segments(boundaries: Sequence[int], total_len: int) -> List[Segment]:
+def build_segments(boundaries: Sequence[int], traj: Sequence[TrajectoryPoint]) -> List[Segment]:
     segments: List[Segment] = []
+    total_len = len(traj)
     for idx, start in enumerate(boundaries):
         end = total_len - 1 if idx == len(boundaries) - 1 else boundaries[idx + 1] - 1
         length = end - start + 1
-        segments.append(Segment(start_frame=start, end_frame=end, length=length))
+        start_pt = traj[start]
+        end_pt = traj[end]
+        parquet_idx = start_pt.parquet_idx
+        for pos in range(start + 1, end + 1):
+            if traj[pos].parquet_idx != parquet_idx:
+                parquet_idx = None
+                break
+        segments.append(
+            Segment(
+                start_index=start,
+                end_index=end,
+                length=length,
+                start_total_frame=start_pt.total_frame_idx,
+                end_total_frame=end_pt.total_frame_idx,
+                start_local_frame=start_pt.frame_idx,
+                end_local_frame=end_pt.frame_idx,
+                parquet_idx=parquet_idx,
+            )
+        )
     return segments
 
 
 def dump_segments(segments: Sequence[Segment]) -> None:
     print("Detected segments:")
     for seg in segments:
-        print(f"- frames {seg.start_frame} -> {seg.end_frame} (length={seg.length})")
+        print(
+            f"- span idx[{seg.start_index}->{seg.end_index}] total[{seg.start_total_frame}->{seg.end_total_frame}]"
+            f" len={seg.length} parquet={seg.parquet_idx}"
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -193,7 +233,7 @@ def main() -> None:
         anchor_threshold=args.anchor_threshold,
         min_gap=args.min_gap,
     )
-    segments = build_segments(boundaries, len(traj))
+    segments = build_segments(boundaries, traj)
     dump_segments(segments)
 
     if args.output:
