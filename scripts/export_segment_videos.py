@@ -41,6 +41,19 @@ except Exception:  # pragma: no cover - handled at runtime
 
 
 @dataclass
+class TrajectoryPoint:
+    frame_idx: int
+    total_frame_idx: int
+    patch_idx: int
+    x: float
+    y: float
+    smoothed_x: float
+    smoothed_y: float
+    score: float
+    parquet_idx: Optional[int]
+
+
+@dataclass
 class Segment:
     start_index: int
     end_index: int
@@ -89,6 +102,34 @@ def load_segments(path: Path) -> List[Segment]:
             )
         )
     return segments
+
+
+def load_trajectory(path: Path) -> List[TrajectoryPoint]:
+    data = json.loads(path.read_text())
+    if not isinstance(data, Sequence):
+        raise ValueError("trajectory JSON must be a list of objects")
+    points: List[TrajectoryPoint] = []
+    for entry in data:
+        frame_idx = int(entry.get("frame_idx", 0))
+        total_idx = int(entry.get("total_frame_idx", frame_idx))
+        parquet_idx = entry.get("parquet_idx")
+        parquet_idx = int(parquet_idx) if parquet_idx is not None else None
+        sx = entry.get("smoothed_x")
+        sy = entry.get("smoothed_y")
+        points.append(
+            TrajectoryPoint(
+                frame_idx=frame_idx,
+                total_frame_idx=total_idx,
+                patch_idx=int(entry["patch_idx"]),
+                x=float(entry["x"]),
+                y=float(entry["y"]),
+                smoothed_x=float(sx if sx is not None else entry["x"]),
+                smoothed_y=float(sy if sy is not None else entry["y"]),
+                score=float(entry.get("score", 0.0)),
+                parquet_idx=parquet_idx,
+            )
+        )
+    return points
 
 
 def list_frames(directory: Path, pattern: Optional[str]) -> List[Path]:
@@ -265,6 +306,40 @@ def to_rgb_array(value) -> np.ndarray:
     raise ValueError(f"Unsupported image container from parquet: {type(value)!r}")
 
 
+def annotate_frame(
+    array: np.ndarray,
+    point: TrajectoryPoint,
+    overlay: bool,
+    marker_radius: int,
+    font: ImageFont.ImageFont,
+) -> np.ndarray:
+    if not overlay:
+        return array
+
+    img = Image.fromarray(array)
+    draw = ImageDraw.Draw(img)
+    x = point.smoothed_x
+    y = point.smoothed_y
+    r = marker_radius
+    bbox = (x - r, y - r, x + r, y + r)
+    draw.ellipse(bbox, outline=(255, 50, 50), width=max(2, r // 2))
+
+    text = (
+        f"tot:{point.total_frame_idx} local:{point.frame_idx} "
+        f"({point.smoothed_x:.1f},{point.smoothed_y:.1f})"
+    )
+    text_pos = (int(x + r + 4), int(y - r - 4))
+    draw.text(
+        text_pos,
+        text,
+        fill=(255, 255, 0),
+        font=font,
+        stroke_width=2,
+        stroke_fill=(0, 0, 0),
+    )
+    return np.array(img, dtype=np.uint8)
+
+
 # -----------------------------------------------------------------------------
 # Video export helpers
 # -----------------------------------------------------------------------------
@@ -275,24 +350,33 @@ def segment_to_frames(
     frame_paths: Optional[List[Path]],
     parquet_tokens: Optional[Sequence[str]],
     image_column: Optional[str],
+    points: Sequence[TrajectoryPoint],
+    overlay: bool,
+    marker_radius: int,
+    font: ImageFont.ImageFont,
 ) -> List[np.ndarray]:
     if frame_paths is not None:
         start = segment.start_total_frame
         end = segment.end_total_frame
         slice_paths = frame_paths[start : end + 1]
-        frames = []
-        for path in slice_paths:
+        frames: List[np.ndarray] = []
+        for path, point in zip(slice_paths, points):
             with Image.open(path) as img:
-                frames.append(np.array(img.convert("RGB"), dtype=np.uint8))
+                arr = np.array(img.convert("RGB"), dtype=np.uint8)
+            frames.append(annotate_frame(arr, point, overlay, marker_radius, font))
         return frames
     if parquet_tokens is not None and image_column is not None:
-        return read_parquet_range(
+        raw_frames = read_parquet_range(
             parquet_tokens,
             image_column,
             segment.start_local_frame,
             segment.end_local_frame,
             shard_idx=segment.parquet_idx,
         )
+        return [
+            annotate_frame(arr, point, overlay, marker_radius, font)
+            for arr, point in zip(raw_frames, points)
+        ]
     raise ValueError("Either frame_paths or parquet_tokens must be provided")
 
 
@@ -311,6 +395,7 @@ def write_video(path: Path, frames: Sequence[np.ndarray], fps: int) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export sampled trajectory segments as videos")
     parser.add_argument("--segments-json", required=True, help="Segments JSON from segment_tracked_trajectory.py")
+    parser.add_argument("--trajectory-json", required=True, help="Tracker trajectory JSON aligned with segments")
     parser.add_argument("--frames-dir", help="Directory containing ordered frames")
     parser.add_argument("--pattern", help="Glob pattern for frames (default: *.png)")
     parser.add_argument("--parquet", action="append", default=[], help="Parquet file(s)/directories/globs")
@@ -332,6 +417,17 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="Blank frames inserted between segments when using --concat-output",
     )
+    parser.add_argument(
+        "--no-overlay",
+        action="store_true",
+        help="Disable overlay of tracked point position and indices",
+    )
+    parser.add_argument(
+        "--marker-radius",
+        type=int,
+        default=8,
+        help="Circle radius (pixels) for the point overlay",
+    )
     return parser.parse_args()
 
 
@@ -343,6 +439,8 @@ def main() -> None:
     if not segments:
         print("[WARN] No segments found; exiting")
         return
+
+    traj_points = load_trajectory(Path(args.trajectory_json))
 
     frame_paths: Optional[List[Path]] = None
     parquet_tokens: Optional[List[str]] = None
@@ -369,8 +467,21 @@ def main() -> None:
         concat_writer = imageio.get_writer(concat_path, fps=args.fps)
         gap_frame = None
 
+    overlay = not args.no_overlay
+    font = ImageFont.load_default()
+
     for idx, segment in chosen:
-        frames = segment_to_frames(segment, frame_paths, parquet_tokens, image_column)
+        points_slice = traj_points[segment.start_index : segment.end_index + 1]
+        frames = segment_to_frames(
+            segment,
+            frame_paths,
+            parquet_tokens,
+            image_column,
+            points_slice,
+            overlay,
+            args.marker_radius,
+            font,
+        )
         video_path = output_dir / f"segment_{idx:04d}.mp4"
         write_video(video_path, frames, fps=args.fps)
         print(f"[INFO] Wrote {video_path} ({segment.length} frames)")
