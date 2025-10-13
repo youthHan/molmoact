@@ -10,6 +10,16 @@ Example::
         --output-dir segment_videos \
         --fps 15
 
+    # Inspect a specific global frame window in addition to sampled segments
+    python3 MolmoAct/scripts/export_segment_videos.py \
+        --segments-json run_01_segments.json \
+        --trajectory-json run_01_traj.json \
+        --parquet /mnt/data/libero/train-00000-of-00025.parquet \
+        --parquet-image-column image \
+        --global-start 1200 --global-end 1600 \
+        --global-output check_1200_1600.mp4 \
+        --output-dir segment_videos
+
 Supports both directory-based frames (``--frames-dir`` + ``--pattern``) and
 parquet shards (``--parquet`` + ``--parquet-image-column``). Segment indices
 must align with the frame order used when tracking.
@@ -413,6 +423,49 @@ def write_video(path: Path, frames: Sequence[np.ndarray], fps: int) -> None:
             writer.append_data(img)
 
 
+def export_global_range(
+    start: int,
+    end: int,
+    output_path: Path,
+    frame_paths: Optional[List[Path]],
+    parquet_tokens: Optional[Sequence[str]],
+    image_column: Optional[str],
+    points: Sequence[TrajectoryPoint],
+    overlay: bool,
+    marker_radius: int,
+    font: ImageFont.ImageFont,
+    fps: int,
+) -> None:
+    if start > end:
+        raise ValueError("--global-start must be <= --global-end")
+
+    points_slice = [pt for pt in points if start <= pt.total_frame_idx <= end]
+    if not points_slice:
+        raise ValueError("No trajectory points found within the specified global range")
+
+    if frame_paths is not None:
+        slice_paths = frame_paths[start : end + 1]
+        frames = []
+        for path, point in zip(slice_paths, points_slice):
+            with Image.open(path) as img:
+                arr = np.array(img.convert("RGB"), dtype=np.uint8)
+            frames.append(annotate_frame(arr, point, overlay, marker_radius, font))
+    elif parquet_tokens is not None and image_column is not None:
+        raw_frames = read_parquet_range(parquet_tokens, image_column, start, end, shard_idx=None)
+        frames = [
+            annotate_frame(arr, point, overlay, marker_radius, font)
+            for arr, point in zip(raw_frames, points_slice)
+        ]
+    else:
+        raise ValueError("Either --frames-dir or --parquet must be provided for global range export")
+
+    write_video(output_path, frames, fps=fps)
+    print(
+        f"[INFO] Wrote global range video {output_path} frames={len(frames)}"
+        f" start={start} end={end}"
+    )
+
+
 # -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
@@ -460,6 +513,9 @@ def parse_args() -> argparse.Namespace:
         default=8,
         help="Circle radius (pixels) for the point overlay",
     )
+    parser.add_argument("--global-start", type=int, help="Global start frame index (inclusive) for manual range export")
+    parser.add_argument("--global-end", type=int, help="Global end frame index (inclusive) for manual range export")
+    parser.add_argument("--global-output", help="Output video path for the manual global range")
     return parser.parse_args()
 
 
@@ -501,6 +557,26 @@ def main() -> None:
 
     overlay = not args.no_overlay
     font = ImageFont.load_default()
+
+    # Optional global range export
+    if args.global_start is not None or args.global_end is not None:
+        if args.global_start is None or args.global_end is None:
+            raise ValueError("Both --global-start and --global-end must be provided")
+        if args.global_output is None:
+            raise ValueError("--global-output is required when exporting a global range")
+        export_global_range(
+            args.global_start,
+            args.global_end,
+            Path(args.global_output),
+            frame_paths,
+            parquet_tokens,
+            image_column,
+            traj_points,
+            overlay,
+            args.marker_radius,
+            font,
+            args.fps,
+        )
 
     for idx, segment in chosen:
         points_slice = traj_points[segment.start_index : segment.end_index + 1]

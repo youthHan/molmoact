@@ -27,6 +27,8 @@ Detection heuristic:
 4. Reject a boundary if the candidate frame is still close to the preceding
    ``--history-window`` frames (distance <= ``--history-threshold``). This
    prevents short bursts of outliers from cutting a long segment.
+5. Task instruction changes (decoded from parquet) always form hard boundaries.
+   Motion-based boundaries honor ``--min-segment-length`` and ``--max-frames-per-segment``.
 
 Confirmed boundaries split the trajectory into contiguous segments. Each
 segment can optionally be written to JSON or summarized on stdout.
@@ -240,70 +242,75 @@ def detect_boundaries(
     if len(traj) < 2:
         return [0]
 
-    boundaries_set = {0}
+    boundary_flags: Dict[int, bool] = {0: True}
     last_task = traj[0].task
-    if last_task is not None:
-        for idx in range(1, len(traj)):
-            task = traj[idx].task
-            if task is not None and task != last_task:
-                boundaries_set.add(idx)
-            if task is not None:
-                last_task = task
+    for idx in range(1, len(traj)):
+        task = traj[idx].task
+        if task is not None and last_task is not None and task != last_task:
+            boundary_flags[idx] = True
+        if task is not None:
+            last_task = task
 
-    i = 1
-    while i < len(traj):
-        step = displacement(traj[i - 1], traj[i])
-        if step >= shift_threshold:
-            # Ensure candidate differs from preceding history
-            history_ok = True
-            similar = 0
-            for j in range(1, history_window + 1):
-                prev_idx = i - j
-                if prev_idx < 0:
-                    break
-                if displacement(traj[prev_idx], traj[i]) <= history_threshold:
-                    similar += 1
-                    if similar > history_outliers:
-                        history_ok = False
+    mandatory_bounds = sorted(idx for idx, mandatory in boundary_flags.items() if mandatory)
+    mandatory_bounds.append(len(traj))
+
+    for b_idx in range(len(mandatory_bounds) - 1):
+        start = mandatory_bounds[b_idx]
+        end = mandatory_bounds[b_idx + 1]
+        last_boundary = start
+        i = start + 1
+        while i < end:
+            step = displacement(traj[i - 1], traj[i])
+            if step >= shift_threshold:
+                history_ok = True
+                similar = 0
+                for j in range(1, history_window + 1):
+                    prev_idx = i - j
+                    if prev_idx < start:
                         break
-            if not history_ok:
-                i += 1
-                continue
+                    if displacement(traj[prev_idx], traj[i]) <= history_threshold:
+                        similar += 1
+                        if similar > history_outliers:
+                            history_ok = False
+                            break
+                if not history_ok:
+                    i += 1
+                    continue
 
-            # Check steady window
-            window_ok = True
-            outliers = 0
-            for j in range(1, steady_window + 1):
-                idx = i + j
-                if idx >= len(traj):
-                    window_ok = False
-                    break
-                step_delta = displacement(traj[idx - 1], traj[idx])
-                anchor_delta = displacement(traj[i], traj[idx])
-                if step_delta > steady_threshold or anchor_delta > anchor_threshold:
-                    outliers += 1
-                    if outliers > steady_outliers:
+                window_ok = True
+                outliers = 0
+                for j in range(1, steady_window + 1):
+                    idx = i + j
+                    if idx >= end:
                         window_ok = False
                         break
-            if window_ok:
-                prev_boundary = max(b for b in boundaries_set if b <= i)
-                if i - prev_boundary >= min_gap:
-                    boundaries_set.add(i)
-                    i += steady_window  # skip past steady window to avoid duplicates
+                    step_delta = displacement(traj[idx - 1], traj[idx])
+                    anchor_delta = displacement(traj[i], traj[idx])
+                    if step_delta > steady_threshold or anchor_delta > anchor_threshold:
+                        outliers += 1
+                        if outliers > steady_outliers:
+                            window_ok = False
+                            break
+                if window_ok and i - last_boundary >= min_gap:
+                    boundary_flags.setdefault(i, False)
+                    last_boundary = i
+                    i += steady_window
                     continue
-        i += 1
-    boundaries = sorted(boundaries_set)
-    if min_segment_length > 0:
-        filtered = [boundaries[0]]
-        last = boundaries[0]
-        for b in boundaries[1:]:
-            if b - last < min_segment_length:
-                # Skip boundary that would create too-short segment
-                continue
-            filtered.append(b)
-            last = b
-        boundaries = filtered
-    return boundaries
+            i += 1
+
+    sorted_bounds = sorted(boundary_flags.items())
+    final_bounds: List[int] = []
+    last_kept = None
+    for idx, mandatory in sorted_bounds:
+        if last_kept is None:
+            final_bounds.append(idx)
+            last_kept = idx
+            continue
+        segment_len = idx - last_kept
+        if mandatory or segment_len >= min_segment_length:
+            final_bounds.append(idx)
+            last_kept = idx
+    return final_bounds
 
 
 def build_segments(boundaries: Sequence[int], traj: Sequence[TrajectoryPoint], max_frames: Optional[int]) -> List[Segment]:
