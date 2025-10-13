@@ -30,7 +30,6 @@ SYSTEM_PROMPT = (
     "- 'Gripper' = the two parallel metal fingers at the robot end effector.\n"
     "- If no object is in DIRECT contact with the gripper in a frame, use null for q1_contact_object AND q2_in_direct_contact.\n"
     "- 2D bounding boxes: absolute pixel coords [x1, y1, x2, y2].\n"
-    "- 3D bounding boxes: if you cannot estimate 3D, set q4_moving_towards_bbox_3d = {\"estimable\": false}.\n"
     "- Output MUST be a JSON ARRAY where EACH ELEMENT corresponds to ONE FRAME in the same order."
 )
 
@@ -40,8 +39,8 @@ For each frame, please answer the following questions in JSON format.
 Q1: What is the object that the gripper is in contact with? If no object is in direct contact with the gripper, answer None.
 Q2: Is the robot arm gripper in direct contact with this object? Pay attention to the two metal fingers at the end of the robot's end effector.
 Q3: What is the object that the robot arm gripper is moving towards?
-Q4: Locate the moving-towards object in Question 3 (report in 2D bounding box, and 3D bounding box format), and also provide a unique text description of the object.
-Q5: What is the current accomplishment status?
+Q4: Locate the moving-towards object in Q3 (report in 2D bounding box, and 3D bounding box format), and also provide a unique text description of the object.
+Q5: What is the current accomplishment status? Describe it briefly.
 Q6: If there are multiple trials over grasping or placing, answer whether this frame contains a successful trial. For example, if the gripper tried to grasp the object multiple times, answer yes or no according to the current frame status. Otherwise, answer N/A.
 Return a JSON array where each element corresponds to one frame in order.
 """.strip()
@@ -490,7 +489,7 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--parquet_manifest", required=True, help="Text file with parquet paths (one per line).")
     ap.add_argument("--segments", required=True, help="JSON segments file.")
     ap.add_argument("--out", default="annotations.jsonl", help="Output JSONL path.")
-    ap.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct", help="Model name or path.")
+    ap.add_argument("--model", default="/mnt/bn/kinetics-lp-maliva/pretrain_models/Qwen3-VL-235B-A22B-Instruct/")
     ap.add_argument("--device_map", default="auto", help="Device map for model loading (e.g., auto, cuda, cpu).")
     ap.add_argument("--dtype", default="auto", help="Torch dtype (auto, float16, bfloat16, float32).")
     ap.add_argument("--max_new_tokens", type=int, default=512)
@@ -498,8 +497,8 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--image_col", default="image")
     ap.add_argument("--end_inclusive", action="store_true", default=True, help="Treat segment end_index as inclusive.")
     ap.add_argument("--mode", choices=["video", "multi-image"], default="video")
-    ap.add_argument("--fps", type=int, default=2, help="FPS when packaging frames into temp videos.")
-    ap.add_argument("--window", type=int, default=64, help="Frames per request window.")
+    ap.add_argument("--fps", type=int, default=20, help="FPS when packaging frames into temp videos.")
+    ap.add_argument("--window", type=int, default=600, help="Frames per request window.")
     ap.add_argument("--stride", type=int, default=64, help="Stride between windows.")
     ap.add_argument("--video_min_pixels", type=int, default=None)
     ap.add_argument("--video_max_pixels", type=int, default=None)
