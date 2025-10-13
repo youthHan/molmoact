@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Lightweight video segment annotation helper.
+"""Simple Qwen3-VL annotator using the HuggingFace backend.
 
-This script fetches frames from parquets, groups them into windows, calls a
-vLLM/OpenAI compatible endpoint, and writes frame-level answers to JSONL.  The
-implementation purposely avoids complex orchestration so that behaviour stays
-transparent and easy to debug.
+This script loads frames from parquet shards, groups them into windows, and
+runs Qwen3-VL via `transformers` to answer the fixed set of annotation
+questions per frame.  It aims to be transparent and easy to tweak—no
+multiprocessing or elaborate async machinery—so you can experiment quickly.
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
-import base64
 import json
 import sys
 import tempfile
@@ -21,8 +19,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 import pandas as pd
-from openai import AsyncOpenAI
+import torch
 import pyarrow.parquet as pq
+from qwen_vl_utils import process_vision_info
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 SYSTEM_PROMPT = (
     "You are a precise robot video annotator. Return JSON ONLY (no prose).\n"
@@ -56,6 +56,11 @@ class Segment:
     task: str
 
 
+# -----------------------------------------------------------------------------
+# Frame helpers
+# -----------------------------------------------------------------------------
+
+
 def decode_image_bytes(cell: Any) -> np.ndarray:
     arr = np.frombuffer(cell["bytes"], np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -64,30 +69,38 @@ def decode_image_bytes(cell: Any) -> np.ndarray:
     return img
 
 
-def frames_to_mp4(frames: Sequence[np.ndarray], fps: int) -> bytes:
+def save_frames_as_video(frames: Sequence[np.ndarray], fps: int) -> Path:
     if not frames:
         raise ValueError("no frames supplied")
-    height, width = frames[0].shape[:2]
+    h, w = frames[0].shape[:2]
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-        path = tmp.name
-    writer = cv2.VideoWriter(path, fourcc, fps, (width, height))
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp.close()
+    writer = cv2.VideoWriter(tmp.name, fourcc, fps, (w, h))
     for frame in frames:
-        if frame.shape[:2] != (height, width):
-            frame = cv2.resize(frame, (width, height))
+        if frame.shape[:2] != (h, w):
+            frame = cv2.resize(frame, (w, h))
         writer.write(frame)
     writer.release()
-    with open(path, "rb") as f:
-        payload = f.read()
-    Path(path).unlink(missing_ok=True)
-    return payload
+    return Path(tmp.name)
 
 
-def make_windows(n: int, window: int, stride: int) -> List[Tuple[int, int]]:
-    if n <= 0:
-        return []
-    starts = list(range(0, n, stride))
-    return [(s, min(s + window, n)) for s in starts]
+def save_frames_as_images(frames: Sequence[np.ndarray]) -> List[Path]:
+    paths: List[Path] = []
+    for frame in frames:
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        tmp.close()
+        success, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        if not success:
+            raise RuntimeError("failed to encode JPEG frame")
+        Path(tmp.name).write_bytes(buf.tobytes())
+        paths.append(Path(tmp.name))
+    return paths
+
+
+# -----------------------------------------------------------------------------
+# Segment utilities
+# -----------------------------------------------------------------------------
 
 
 def load_manifest(path: Path) -> List[str]:
@@ -104,11 +117,7 @@ def load_manifest(path: Path) -> List[str]:
 
 
 def parquet_row_counts(paths: Sequence[str]) -> List[int]:
-    lengths: List[int] = []
-    for p in paths:
-        meta = pq.ParquetFile(p).metadata
-        lengths.append(meta.num_rows if meta is not None else 0)
-    return lengths
+    return [pq.ParquetFile(p).metadata.num_rows for p in paths]
 
 
 def cumulative_starts(lengths: Sequence[int]) -> List[int]:
@@ -192,14 +201,65 @@ def load_segments_json(
     return results
 
 
-class SimpleAnnotator:
-    def __init__(self, base_url: str, api_key: str, model: str, concurrency: int, mode: str):
-        self.client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-        self.model = model
-        self.sem = asyncio.Semaphore(max(1, concurrency))
-        self.mode = mode
+def make_windows(n: int, window: int, stride: int) -> List[Tuple[int, int]]:
+    if n <= 0:
+        return []
+    return [(start, min(start + window, n)) for start in range(0, n, stride)]
 
-    async def annotate_window(
+
+# -----------------------------------------------------------------------------
+# HF inference wrapper
+# -----------------------------------------------------------------------------
+
+
+def parse_dtype(dtype_str: str) -> Optional[torch.dtype]:
+    if dtype_str is None or dtype_str.lower() == "auto":
+        return None
+    mapping = {
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "half": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+    }
+    key = dtype_str.lower()
+    if key not in mapping:
+        raise ValueError(f"Unsupported dtype: {dtype_str}")
+    return mapping[key]
+
+
+class HFAnnotator:
+    def __init__(
+        self,
+        model_name: str,
+        device_map: str,
+        torch_dtype: Optional[torch.dtype],
+        max_new_tokens: int,
+        mode: str,
+        video_min_pixels: Optional[int],
+        video_max_pixels: Optional[int],
+        video_total_pixels: Optional[int],
+        video_sample_fps: Optional[float],
+    ) -> None:
+        print(f"Loading processor {model_name} ...", flush=True)
+        self.processor = AutoProcessor.from_pretrained(model_name)
+        load_kwargs: Dict[str, Any] = {"device_map": device_map, "trust_remote_code": True}
+        if torch_dtype is not None:
+            load_kwargs["torch_dtype"] = torch_dtype
+        print(f"Loading model {model_name} ...", flush=True)
+        self.model = AutoModelForImageTextToText.from_pretrained(model_name, **load_kwargs)
+        self.model.eval()
+        self.max_new_tokens = max_new_tokens
+        self.mode = mode
+        self.video_min_pixels = video_min_pixels
+        self.video_max_pixels = video_max_pixels
+        self.video_total_pixels = video_total_pixels
+        self.video_sample_fps = video_sample_fps
+        self.image_patch_size = getattr(self.processor.image_processor, "patch_size", 16)
+
+    def annotate_window(
         self,
         *,
         segment_id: str,
@@ -208,79 +268,123 @@ class SimpleAnnotator:
         task_text: str,
         fps: int,
     ) -> Dict[int, Dict[str, Any]]:
-        if not frames:
-            return {}
+        temp_files: List[Path] = []
+        try:
+            user_content: List[Dict[str, Any]] = []
+            if self.mode == "video":
+                video_path = save_frames_as_video(frames, fps)
+                temp_files.append(video_path)
+                video_entry: Dict[str, Any] = {"type": "video", "video": video_path.resolve().as_uri()}
+                if self.video_sample_fps is not None:
+                    video_entry["fps"] = float(self.video_sample_fps)
+                else:
+                    video_entry["fps"] = float(fps)
+                if self.video_min_pixels is not None:
+                    video_entry["min_pixels"] = self.video_min_pixels
+                if self.video_max_pixels is not None:
+                    video_entry["max_pixels"] = self.video_max_pixels
+                if self.video_total_pixels is not None:
+                    video_entry["total_pixels"] = self.video_total_pixels
+                user_content.append(video_entry)
+            else:
+                image_paths = save_frames_as_images(frames)
+                temp_files.extend(image_paths)
+                # Represent as a video with explicit frames list (per README guidance)
+                frame_uris = [path.resolve().as_uri() for path in image_paths]
+                video_entry = {"type": "video", "video": frame_uris}
+                if self.video_sample_fps is not None:
+                    video_entry["sample_fps"] = str(self.video_sample_fps)
+                user_content.append(video_entry)
 
-        content: List[Dict[str, Any]] = []
-        if self.mode == "video":
-            clip = frames_to_mp4(frames, fps=fps)
-            data_url = "data:video/mp4;base64," + base64.b64encode(clip).decode("utf-8")
-            content.append({"type": "text", "text": f"Segment {segment_id} with {len(frames)} frames."})
-            content.append({"type": "video_url", "video_url": {"url": data_url}})
-        else:
-            content.append({"type": "text", "text": f"Frames from segment {segment_id}."})
-            for idx, frame in zip(frame_indices, frames):
-                ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                if not ok:
-                    raise RuntimeError("failed to encode JPEG frame")
-                data_url = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("utf-8")
-                content.append({"type": "text", "text": f"Frame {idx}"})
-                content.append({"type": "image_url", "image_url": {"url": data_url}})
+            user_content.append({"type": "text", "text": QUESTION_BLOCK.format(task=task_text)})
 
-        content.append({"type": "text", "text": QUESTION_BLOCK.format(task=task_text)})
+            messages = [
+                {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+                {"role": "user", "content": user_content},
+            ]
 
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": content},
-        ]
-
-        async with self.sem:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0,
+            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            images, videos, video_kwargs = process_vision_info(
+                messages,
+                image_patch_size=self.image_patch_size,
+                return_video_kwargs=True,
+                return_video_metadata=True,
             )
 
-        text = response.choices[0].message.content.strip()
-        data = self._parse_json_array(text)
+            if videos is not None:
+                videos, video_meta = zip(*videos)
+                videos = list(videos)
+                video_meta = list(video_meta)
+            else:
+                video_meta = None
 
-        out: Dict[int, Dict[str, Any]] = {}
-        for idx, obj in enumerate(data):
-            frame_idx = obj.get("frame_index")
-            if frame_idx is None and idx < len(frame_indices):
-                frame_idx = frame_indices[idx]
-                obj["frame_index"] = frame_idx
-            out[int(frame_idx)] = obj
-        return out
+            inputs = self.processor(
+                text=text,
+                images=images,
+                videos=videos,
+                video_metadata=video_meta,
+                return_tensors="pt",
+                do_resize=False,
+                **video_kwargs,
+            )
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                generated_ids = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens)
+
+            trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+            ]
+            outputs = self.processor.batch_decode(
+                trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )
+            text_output = outputs[0] if outputs else "[]"
+        finally:
+            for path in temp_files:
+                path.unlink(missing_ok=True)
+
+        return self._json_array_to_dict(text_output, frame_indices)
 
     @staticmethod
-    def _parse_json_array(raw: str) -> List[Dict[str, Any]]:
+    def _json_array_to_dict(raw: str, frame_indices: Sequence[int]) -> Dict[int, Dict[str, Any]]:
         first = raw.find("[")
         last = raw.rfind("]")
         snippet = raw[first : last + 1] if first != -1 and last != -1 and last > first else raw
         try:
             parsed = json.loads(snippet)
-        except json.JSONDecodeError as exc:  # pragma: no cover - surface textual output
-            raise RuntimeError(f"model did not return valid JSON: {raw[:200]}...") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Model returned non-JSON output: {raw[:200]}...") from exc
         if not isinstance(parsed, list):
-            raise RuntimeError("model response is not a JSON array")
-        cleaned: List[Dict[str, Any]] = []
-        for item in parsed:
-            if isinstance(item, dict):
-                cleaned.append(item)
-        return cleaned
+            raise RuntimeError("Model response is not a JSON array")
+
+        result: Dict[int, Dict[str, Any]] = {}
+        for idx, obj in enumerate(parsed):
+            if not isinstance(obj, dict):
+                continue
+            frame_idx = obj.get("frame_index")
+            if frame_idx is None and idx < len(frame_indices):
+                frame_idx = frame_indices[idx]
+                obj["frame_index"] = frame_idx
+            if frame_idx is None:
+                continue
+            result[int(frame_idx)] = obj
+        return result
 
 
-async def annotate_segment(
+# -----------------------------------------------------------------------------
+# Annotation driver
+# -----------------------------------------------------------------------------
+
+
+def annotate_segment(
     *,
     seg: Segment,
-    annotator: SimpleAnnotator,
+    annotator: HFAnnotator,
     df: pd.DataFrame,
     image_column: str,
     window: int,
     stride: int,
     fps: int,
-    task_text: str,
 ) -> List[Dict[str, Any]]:
     start = max(0, seg.start)
     end = min(seg.end, len(df))
@@ -294,14 +398,14 @@ async def annotate_segment(
     for ws, we in make_windows(len(local_indices), window, stride):
         indices = local_indices[ws:we]
         frames = [decode_image_bytes(cell) for cell in image_cells[ws:we]]
-        result = await annotator.annotate_window(
+        window_result = annotator.annotate_window(
             segment_id=seg.segment_id,
             frame_indices=indices,
             frames=frames,
-            task_text=task_text,
+            task_text=seg.task,
             fps=fps,
         )
-        frame_map.update(result)
+        frame_map.update(window_result)
 
     ordered: List[Dict[str, Any]] = []
     for frame_idx in sorted(frame_map):
@@ -313,7 +417,7 @@ async def annotate_segment(
     return ordered
 
 
-async def run(args: argparse.Namespace) -> None:
+def run(args: argparse.Namespace) -> None:
     manifest_path = Path(args.parquet_manifest)
     segments_path = Path(args.segments)
     out_path = Path(args.out)
@@ -333,12 +437,17 @@ async def run(args: argparse.Namespace) -> None:
         print("No segments to annotate; wrote empty file.")
         return
 
-    annotator = SimpleAnnotator(
-        base_url=args.base_url,
-        api_key=args.api_key,
-        model=args.model,
-        concurrency=args.concurrency,
+    dtype = parse_dtype(args.dtype)
+    annotator = HFAnnotator(
+        model_name=args.model,
+        device_map=args.device_map,
+        torch_dtype=dtype,
+        max_new_tokens=args.max_new_tokens,
         mode=args.mode,
+        video_min_pixels=args.video_min_pixels,
+        video_max_pixels=args.video_max_pixels,
+        video_total_pixels=args.video_total_pixels,
+        video_sample_fps=args.video_sample_fps,
     )
 
     df_cache: Dict[int, pd.DataFrame] = {}
@@ -353,20 +462,15 @@ async def run(args: argparse.Namespace) -> None:
             else:
                 df = df_cache[seg.parquet_idx]
 
-            try:
-                frame_rows = await annotate_segment(
-                    seg=seg,
-                    annotator=annotator,
-                    df=df,
-                    image_column=args.image_col,
-                    window=args.window,
-                    stride=args.stride,
-                    fps=args.fps,
-                    task_text=seg.task,
-                )
-            except Exception as exc:
-                print(f"[ERROR] Segment {seg.segment_id} failed: {exc}", file=sys.stderr)
-                raise
+            frame_rows = annotate_segment(
+                seg=seg,
+                annotator=annotator,
+                df=df,
+                image_column=args.image_col,
+                window=args.window,
+                stride=args.stride,
+                fps=args.fps,
+            )
 
             for row in frame_rows:
                 sink.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -376,29 +480,38 @@ async def run(args: argparse.Namespace) -> None:
     print(f"Done. Wrote {total_frames} frame annotations to {out_path}.")
 
 
+# -----------------------------------------------------------------------------
+# CLI
+# -----------------------------------------------------------------------------
+
+
 def build_argparser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Annotate segments with a vLLM endpoint.")
-    ap.add_argument("--parquet_manifest", required=True, help="Text file containing parquet paths (one per line).")
-    ap.add_argument("--segments", required=True, help="JSON file describing segments to annotate.")
-    ap.add_argument("--out", default="annotations.jsonl", help="Output JSONL file.")
-    ap.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct")
-    ap.add_argument("--base_url", default="http://127.0.0.1:8000/v1")
-    ap.add_argument("--api_key", default="token-abc123")
+    ap = argparse.ArgumentParser(description="Annotate segments using Qwen3-VL (HF backend).")
+    ap.add_argument("--parquet_manifest", required=True, help="Text file with parquet paths (one per line).")
+    ap.add_argument("--segments", required=True, help="JSON segments file.")
+    ap.add_argument("--out", default="annotations.jsonl", help="Output JSONL path.")
+    ap.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct", help="Model name or path.")
+    ap.add_argument("--device_map", default="auto", help="Device map for model loading (e.g., auto, cuda, cpu).")
+    ap.add_argument("--dtype", default="auto", help="Torch dtype (auto, float16, bfloat16, float32).")
+    ap.add_argument("--max_new_tokens", type=int, default=512)
     ap.add_argument("--default_task", default="pick up the white mug and place it onto the plate, then move the chocolate bar to the left of the plate.")
     ap.add_argument("--image_col", default="image")
     ap.add_argument("--end_inclusive", action="store_true", default=True, help="Treat segment end_index as inclusive.")
     ap.add_argument("--mode", choices=["video", "multi-image"], default="video")
-    ap.add_argument("--fps", type=int, default=2, help="FPS when packaging frames as video clips.")
+    ap.add_argument("--fps", type=int, default=2, help="FPS when packaging frames into temp videos.")
     ap.add_argument("--window", type=int, default=64, help="Frames per request window.")
     ap.add_argument("--stride", type=int, default=64, help="Stride between windows.")
-    ap.add_argument("--concurrency", type=int, default=2, help="Max simultaneous requests.")
+    ap.add_argument("--video_min_pixels", type=int, default=None)
+    ap.add_argument("--video_max_pixels", type=int, default=None)
+    ap.add_argument("--video_total_pixels", type=int, default=None)
+    ap.add_argument("--video_sample_fps", type=float, default=None, help="Override FPS metadata sent to the model.")
     return ap
 
 
 def main() -> None:
     parser = build_argparser()
     args = parser.parse_args()
-    asyncio.run(run(args))
+    run(args)
 
 
 if __name__ == "__main__":
