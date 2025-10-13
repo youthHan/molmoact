@@ -452,11 +452,20 @@ def load_segments_json(
 # =============================
 
 class VLLMAnnotator:
-    def __init__(self, base_url: str, api_key: str, model: str, concurrency: int = 8, structured_output: str = "json_schema"):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        concurrency: int = 8,
+        structured_output: str = "json_schema",
+        log_prefix: str = "",
+    ):
         self.client = AsyncOpenAI(base_url=base_url, api_key=api_key)
         self.model = model
         self.sem = asyncio.Semaphore(concurrency)
         self.structured_output = structured_output  # "json_schema" | "json_object" | "none"
+        self.log_prefix = log_prefix.strip()
 
     async def annotate_window(
         self,
@@ -470,6 +479,18 @@ class VLLMAnnotator:
     ) -> Dict[int, Dict[str, Any]]:
         if not frames_bgr:
             return {}
+
+        prefix = self.log_prefix
+        if prefix:
+            try:
+                first_idx = frame_indices[0]
+                last_idx = frame_indices[-1]
+            except IndexError:
+                first_idx = last_idx = -1
+            log_event(
+                f"Submitting window: segment={segment_id}, frames={len(frames_bgr)}, range=[{first_idx},{last_idx}], mode={mode}",
+                prefix=prefix,
+            )
 
         if mode == "video":
             clip_url = frames_to_mp4_data_url(frames_bgr, fps=fps_for_video)
@@ -500,6 +521,11 @@ class VLLMAnnotator:
             )
 
         txt = resp.choices[0].message.content.strip()
+        if prefix:
+            log_event(
+                f"Received response for segment={segment_id}, frames={len(frames_bgr)}",
+                prefix=prefix,
+            )
         # In json_schema/json_object modes, it's already valid JSON:
         try:
             data = json.loads(txt)
@@ -593,13 +619,20 @@ async def run(
         if pq_idx in pq_cache:
             return pq_cache[pq_idx]
         path = parquet_paths[pq_idx]
+        log_event(f"Loading parquet[{pq_idx}] from {path}", prefix=prefix)
         df = pd.read_parquet(path, columns=[image_col], engine="pyarrow")
         df["_local_index"] = np.arange(len(df), dtype=np.int64)
         pq_cache[pq_idx] = df
         return df
 
-    annotator = VLLMAnnotator(base_url=base_url, api_key=api_key, model=model,
-                              concurrency=concurrency, structured_output=structured_output)
+    annotator = VLLMAnnotator(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        concurrency=concurrency,
+        structured_output=structured_output,
+        log_prefix=prefix,
+    )
 
     async def handle_segment(seg: Dict[str, Any]) -> int:
         seg_id = seg["segment_id"]
@@ -607,6 +640,11 @@ async def run(
         start = int(seg["start"])
         end = int(seg["end"])  # exclusive
         task_txt = seg["task"]
+
+        log_event(
+            f"Preparing segment {seg_id} (order={seg['__order']}, parquet={pq_idx}, frames={end - start})",
+            prefix=prefix,
+        )
 
         df = await load_df_if_needed(pq_idx)
 
@@ -623,8 +661,14 @@ async def run(
         local_idxs_all = df["_local_index"].iloc[start:end].tolist()
         imgs_bytes = df[image_col].iloc[start:end].tolist()
 
+        windows = make_windows_len(len(local_idxs_all), window=window, stride=stride)
+        log_event(
+            f"Segment {seg_id} split into {len(windows)} window(s)",
+            prefix=prefix,
+        )
+
         tasks = []
-        for ws, we in make_windows_len(len(local_idxs_all), window=window, stride=stride):
+        for ws, we in windows:
             widxs = local_idxs_all[ws:we]
             frames_bgr = [decode_image_bytes(b) for b in imgs_bytes[ws:we]]
             tasks.append(annotator.annotate_window(
