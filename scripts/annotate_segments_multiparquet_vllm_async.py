@@ -23,61 +23,70 @@ import pyarrow.parquet as pq
 # Strict output schema (what we expect back)
 # =============================
 from typing import List, Optional
-from pydantic import BaseModel, Field
-try:
-    # Pydantic v2
-    from typing import Annotated
-    from pydantic.version import VERSION as PYD_VERSION
-    IS_PYD_V2 = PYD_VERSION.startswith("2.")
-except Exception:
-    IS_PYD_V2 = False
-
-if IS_PYD_V2:
-    # v2: use Annotated[List[int], Field(min_length=4, max_length=4)]
-    List4Ints = Annotated[List[int], Field(min_length=4, max_length=4)]
-else:
-    # v1: use conlist with min_items/max_items
-    from pydantic import conlist
-    List4Ints = conlist(int, min_items=4, max_items=4)
 
 
-# --- models (replace your BBox2D and json_schema helper) ---
-class BBox2D(BaseModel):
-    bbox_2d: List4Ints
+def _nullable(type_dict: Dict[str, Any]) -> Dict[str, Any]:
+    return {"anyOf": [{"type": "null"}, type_dict]}
 
-class BBox3D(BaseModel):
-    estimable: bool
-    x_min: Optional[float] = None
-    y_min: Optional[float] = None
-    z_min: Optional[float] = None
-    x_max: Optional[float] = None
-    y_max: Optional[float] = None
-    z_max: Optional[float] = None
-    note: Optional[str] = None
 
-class FrameAnswer(BaseModel):
-    frame_index: int
-    q1_contact_object: Optional[str] = None
-    q2_in_direct_contact: Optional[bool] = None
-    q3_moving_towards_object: Optional[str] = None
-    q4_moving_towards_bbox_2d: Optional[BBox2D] = None
-    q4_moving_towards_bbox_3d: Optional[BBox3D] = None
-    q4_moving_towards_unique_description: Optional[str] = None
-    q5_status: str
-    q6_success_trial: str  # "yes" | "no" | "N/A"
+BBOX_2D_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "bbox_2d": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "minItems": 4,
+            "maxItems": 4,
+        }
+    },
+    "required": ["bbox_2d"],
+    "additionalProperties": False,
+}
 
-def _model_schema(model_cls):
-    # v2: model_json_schema(); v1: schema()
-    return (getattr(model_cls, "model_json_schema", None) or getattr(model_cls, "schema"))()
+BBOX_3D_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "estimable": {"type": "boolean"},
+        "x_min": {"type": ["number", "null"]},
+        "y_min": {"type": ["number", "null"]},
+        "z_min": {"type": ["number", "null"]},
+        "x_max": {"type": ["number", "null"]},
+        "y_max": {"type": ["number", "null"]},
+        "z_max": {"type": ["number", "null"]},
+        "note": {"type": ["string", "null"]},
+    },
+    "required": ["estimable"],
+    "additionalProperties": False,
+}
+
+FRAME_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "frame_index": {"type": "integer"},
+        "q1_contact_object": {"type": ["string", "null"]},
+        "q2_in_direct_contact": {"type": ["boolean", "null"]},
+        "q3_moving_towards_object": {"type": ["string", "null"]},
+        "q4_moving_towards_bbox_2d": _nullable(BBOX_2D_SCHEMA),
+        "q4_moving_towards_bbox_3d": _nullable(BBOX_3D_SCHEMA),
+        "q4_moving_towards_unique_description": {"type": ["string", "null"]},
+        "q5_status": {"type": "string"},
+        "q6_success_trial": {"type": "string", "enum": ["yes", "no", "N/A"]},
+    },
+    "required": ["frame_index", "q5_status", "q6_success_trial"],
+    "additionalProperties": False,
+}
+
 
 def json_schema_array_of_frames():
-    item_schema = _model_schema(FrameAnswer)
     return {
         "type": "json_schema",
         "json_schema": {
             "name": "frame_annotations",
-            "schema": {"type": "array", "items": item_schema}
-        }
+            "schema": {
+                "type": "array",
+                "items": FRAME_SCHEMA,
+            },
+        },
     }
 
 # =============================
