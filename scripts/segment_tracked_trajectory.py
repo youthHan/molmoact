@@ -34,11 +34,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import glob
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
-import math
+try:  # optional dependency for task extraction from parquet
+    import pyarrow.parquet as pq
+except Exception:  # pragma: no cover
+    pq = None
 
 
 @dataclass
@@ -52,6 +59,7 @@ class TrajectoryPoint:
     smoothed_x: float
     smoothed_y: float
     parquet_idx: Optional[int]
+    task: Optional[str] = None
 
     @classmethod
     def from_raw(cls, data: dict) -> "TrajectoryPoint":
@@ -61,6 +69,7 @@ class TrajectoryPoint:
         total_idx = int(data.get("total_frame_idx", frame_idx))
         parquet_idx = data.get("parquet_idx")
         parquet_idx = int(parquet_idx) if parquet_idx is not None else None
+        task = data.get("task")
         return cls(
             frame_idx=frame_idx,
             total_frame_idx=total_idx,
@@ -71,6 +80,7 @@ class TrajectoryPoint:
             smoothed_x=float(sx if sx is not None else data["x"]),
             smoothed_y=float(sy if sy is not None else data["y"]),
             parquet_idx=parquet_idx,
+            task=task,
         )
 
     def position(self) -> tuple[float, float]:
@@ -87,6 +97,7 @@ class Segment:
     start_local_frame: int
     end_local_frame: int
     parquet_idx: Optional[int]
+    task: Optional[str]
 
     def to_dict(self) -> dict:
         return {
@@ -98,6 +109,7 @@ class Segment:
             "start_frame": self.start_local_frame,
             "end_frame": self.end_local_frame,
             "parquet_idx": self.parquet_idx,
+            "task": self.task,
         }
 
 
@@ -112,6 +124,103 @@ def displacement(a: TrajectoryPoint, b: TrajectoryPoint) -> float:
     ax, ay = a.position()
     bx, by = b.position()
     return math.hypot(bx - ax, by - ay)
+
+
+def expand_parquet_tokens(tokens: Sequence[str]) -> List[Path]:
+    paths: List[Path] = []
+    for token in tokens:
+        expanded = os.path.expanduser(token)
+        candidate = Path(expanded)
+        if candidate.is_dir():
+            paths.extend(sorted(candidate.glob("*.parquet")))
+            continue
+        if candidate.is_file() and candidate.suffix == ".parquet":
+            paths.append(candidate)
+            continue
+        for match in glob.glob(expanded, recursive=True):
+            match_path = Path(match)
+            if match_path.is_file() and match_path.suffix == ".parquet":
+                paths.append(match_path)
+    unique: List[Path] = []
+    seen = set()
+    for path in sorted(paths):
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    return unique
+
+
+def attach_tasks(
+    traj: Sequence[TrajectoryPoint],
+    parquet_tokens: Sequence[str],
+    task_column: str,
+) -> None:
+    if pq is None:
+        raise RuntimeError("pyarrow is required for --parquet task extraction")
+    files = expand_parquet_tokens(parquet_tokens)
+    if not files:
+        raise FileNotFoundError("No parquet files located for task extraction")
+
+    by_shard: Dict[int, Dict[int, TrajectoryPoint]] = {}
+    for pt in traj:
+        if pt.task is not None:
+            continue
+        if pt.parquet_idx is None:
+            continue
+        shard = by_shard.setdefault(pt.parquet_idx, {})
+        shard[pt.frame_idx] = pt
+
+    for shard_idx, index_map in by_shard.items():
+        if shard_idx < 0 or shard_idx >= len(files):
+            continue
+        path = files[shard_idx]
+        pf = pq.ParquetFile(path)
+        metadata = pf.metadata
+        num_groups = metadata.num_row_groups if metadata is not None else 1
+        offset = 0
+        for rg_idx in range(num_groups):
+            table = pf.read_row_group(rg_idx, columns=[task_column])
+            rows = table.to_pylist()
+            for local_offset, row in enumerate(rows):
+                frame_idx = offset + local_offset
+                target = index_map.get(frame_idx)
+                if target is None:
+                    continue
+                value = row.get(task_column) if isinstance(row, dict) else row
+                target.task = parse_task(value)
+            offset += len(rows)
+
+
+def parse_task(conversations: Optional[str]) -> Optional[str]:
+    if conversations in (None, ""):
+        return None
+    try:
+        if isinstance(conversations, str):
+            data = json.loads(conversations)
+        else:
+            data = conversations
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        values = data.get("value")
+    elif isinstance(data, list):
+        values = data
+    else:
+        return None
+    if not values:
+        return None
+    first = values[0]
+    if isinstance(first, dict):
+        text = first.get("value") or first.get("text")
+    else:
+        text = first
+    if not text:
+        return None
+    if not isinstance(text, str):
+        return None
+    sentence = re.split(r"[.!?]", text.strip(), maxsplit=1)[0]
+    return sentence.strip()
 
 
 def detect_boundaries(
@@ -129,7 +238,16 @@ def detect_boundaries(
     if len(traj) < 2:
         return [0]
 
-    boundaries = [0]
+    boundaries_set = {0}
+    last_task = traj[0].task
+    if last_task is not None:
+        for idx in range(1, len(traj)):
+            task = traj[idx].task
+            if task is not None and task != last_task:
+                boundaries_set.add(idx)
+            if task is not None:
+                last_task = task
+
     i = 1
     while i < len(traj):
         step = displacement(traj[i - 1], traj[i])
@@ -166,40 +284,54 @@ def detect_boundaries(
                         window_ok = False
                         break
             if window_ok:
-                if i - boundaries[-1] >= min_gap:
-                    boundaries.append(i)
+                prev_boundary = max(b for b in boundaries_set if b <= i)
+                if i - prev_boundary >= min_gap:
+                    boundaries_set.add(i)
                     i += steady_window  # skip past steady window to avoid duplicates
                     continue
         i += 1
-    return boundaries
+    return sorted(boundaries_set)
 
 
-def build_segments(boundaries: Sequence[int], traj: Sequence[TrajectoryPoint]) -> List[Segment]:
+def build_segments(boundaries: Sequence[int], traj: Sequence[TrajectoryPoint], max_frames: Optional[int]) -> List[Segment]:
     segments: List[Segment] = []
     total_len = len(traj)
-    for idx, start in enumerate(boundaries):
-        end = total_len - 1 if idx == len(boundaries) - 1 else boundaries[idx + 1] - 1
-        length = end - start + 1
-        start_pt = traj[start]
-        end_pt = traj[end]
-        parquet_idx = start_pt.parquet_idx
-        for pos in range(start + 1, end + 1):
-            if traj[pos].parquet_idx != parquet_idx:
-                parquet_idx = None
-                break
-        segments.append(
-            Segment(
-                start_index=start,
-                end_index=end,
-                length=length,
-                start_total_frame=start_pt.total_frame_idx,
-                end_total_frame=end_pt.total_frame_idx,
-                start_local_frame=start_pt.frame_idx,
-                end_local_frame=end_pt.frame_idx,
-                parquet_idx=parquet_idx,
-            )
-        )
+    sorted_bounds = sorted(set(boundaries))
+    for idx, start in enumerate(sorted_bounds):
+        end = total_len - 1 if idx == len(sorted_bounds) - 1 else sorted_bounds[idx + 1] - 1
+        while max_frames and (end - start + 1) > max_frames:
+            split_end = start + max_frames - 1
+            segments.append(_segment_from_range(traj, start, split_end))
+            start = split_end + 1
+        segments.append(_segment_from_range(traj, start, end))
     return segments
+
+
+def _segment_from_range(traj: Sequence[TrajectoryPoint], start: int, end: int) -> Segment:
+    start_pt = traj[start]
+    end_pt = traj[end]
+    parquet_idx = start_pt.parquet_idx
+    task_label = start_pt.task
+    homogeneous = True
+    for pos in range(start + 1, end + 1):
+        pt = traj[pos]
+        if pt.parquet_idx != parquet_idx:
+            parquet_idx = None
+        if task_label is not None and pt.task != task_label:
+            homogeneous = False
+    if not homogeneous:
+        task_label = None
+    return Segment(
+        start_index=start,
+        end_index=end,
+        length=end - start + 1,
+        start_total_frame=start_pt.total_frame_idx,
+        end_total_frame=end_pt.total_frame_idx,
+        start_local_frame=start_pt.frame_idx,
+        end_local_frame=end_pt.frame_idx,
+        parquet_idx=parquet_idx,
+        task=task_label,
+    )
 
 
 def dump_segments(segments: Sequence[Segment]) -> None:
@@ -207,7 +339,7 @@ def dump_segments(segments: Sequence[Segment]) -> None:
     for seg in segments:
         print(
             f"- span idx[{seg.start_index}->{seg.end_index}] total[{seg.start_total_frame}->{seg.end_total_frame}]"
-            f" len={seg.length} parquet={seg.parquet_idx}"
+            f" len={seg.length} parquet={seg.parquet_idx} task={seg.task}"
         )
 
 
@@ -252,6 +384,23 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Allowed number of history frames still close to the candidate",
     )
+    parser.add_argument(
+        "--max-frames-per-segment",
+        type=int,
+        default=None,
+        help="Maximum allowed frames per segment (segments are split if longer)",
+    )
+    parser.add_argument(
+        "--parquet",
+        action="append",
+        default=[],
+        help="Parquet file(s)/directories/globs to extract task descriptions",
+    )
+    parser.add_argument(
+        "--task-column",
+        default="conversations",
+        help="Column containing task descriptions (JSON string)",
+    )
     parser.add_argument("--min-gap", type=int, default=30, help="Minimum frames between restart boundaries")
     parser.add_argument("--output", help="Optional path to write segments JSON")
     return parser.parse_args()
@@ -265,6 +414,9 @@ def main() -> None:
         print("[WARN] Empty trajectory; nothing to segment")
         return
 
+    if args.parquet:
+        attach_tasks(traj, args.parquet, args.task_column)
+
     boundaries = detect_boundaries(
         traj,
         shift_threshold=args.shift_threshold,
@@ -277,7 +429,7 @@ def main() -> None:
         history_outliers=args.history_outliers,
         min_gap=args.min_gap,
     )
-    segments = build_segments(boundaries, traj)
+    segments = build_segments(boundaries, traj, args.max_frames_per_segment)
     dump_segments(segments)
 
     if args.output:
@@ -291,6 +443,8 @@ def main() -> None:
             "history_window": args.history_window,
             "history_threshold": args.history_threshold,
             "history_outliers": args.history_outliers,
+            "max_frames_per_segment": args.max_frames_per_segment,
+            "task_column": args.task_column if args.parquet else None,
             "min_gap": args.min_gap,
             "segments": [seg.to_dict() for seg in segments],
         }

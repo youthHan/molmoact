@@ -51,6 +51,7 @@ class TrajectoryPoint:
     smoothed_y: float
     score: float
     parquet_idx: Optional[int]
+    task: Optional[str] = None
 
 
 @dataclass
@@ -63,6 +64,7 @@ class Segment:
     start_local_frame: int
     end_local_frame: int
     parquet_idx: Optional[int] = None
+    task: Optional[str] = None
 
 
 # -----------------------------------------------------------------------------
@@ -99,6 +101,7 @@ def load_segments(path: Path) -> List[Segment]:
                 start_local_frame=start_local,
                 end_local_frame=end_local,
                 parquet_idx=parquet_idx,
+                task=entry.get("task"),
             )
         )
     return segments
@@ -127,6 +130,7 @@ def load_trajectory(path: Path) -> List[TrajectoryPoint]:
                 smoothed_y=float(sy if sy is not None else entry["y"]),
                 score=float(entry.get("score", 0.0)),
                 parquet_idx=parquet_idx,
+                task=entry.get("task"),
             )
         )
     return points
@@ -340,6 +344,8 @@ def annotate_frame(
         f"tot:{point.total_frame_idx} local:{point.frame_idx} "
         f"({point.smoothed_x:.1f},{point.smoothed_y:.1f})"
     )
+    if point.task:
+        text += f"\n{point.task}"
     text_pos = (int(x + r + 4), int(y - r - 4))
     draw.text(
         text_pos,
@@ -378,12 +384,20 @@ def segment_to_frames(
             frames.append(annotate_frame(arr, point, overlay, marker_radius, font))
         return frames
     if parquet_tokens is not None and image_column is not None:
+        if segment.parquet_idx is not None:
+            start = segment.start_local_frame
+            end = segment.end_local_frame
+            shard_idx = segment.parquet_idx
+        else:
+            start = segment.start_total_frame
+            end = segment.end_total_frame
+            shard_idx = None
         raw_frames = read_parquet_range(
             parquet_tokens,
             image_column,
-            segment.start_local_frame,
-            segment.end_local_frame,
-            shard_idx=segment.parquet_idx,
+            start,
+            end,
+            shard_idx=shard_idx,
         )
         return [
             annotate_frame(arr, point, overlay, marker_radius, font)
@@ -502,7 +516,10 @@ def main() -> None:
         )
         video_path = output_dir / f"segment_{idx:04d}.mp4"
         write_video(video_path, frames, fps=args.fps)
-        print(f"[INFO] Wrote {video_path} ({segment.length} frames)")
+        print(
+            f"[INFO] Wrote {video_path} ({segment.length} frames)"
+            + (f" task={segment.task}" if segment.task else "")
+        )
 
         if concat_writer is not None:
             for array in frames:
