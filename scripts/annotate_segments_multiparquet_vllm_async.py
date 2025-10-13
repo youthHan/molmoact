@@ -1,8 +1,16 @@
-import os, io, json, base64, asyncio, tempfile, argparse, math, sys
+import os, io, json, base64, asyncio, tempfile, argparse, math, sys, time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import multiprocessing as mp
+
+
+def log_event(message: str, *, prefix: str = "", stream = sys.stdout) -> None:
+    """Print a timestamped log line for easier runtime tracing."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    prefix_text = f"{prefix.strip()} " if prefix else ""
+    print(f"[{timestamp}] {prefix_text}{message}", file=stream, flush=True)
 
 import numpy as np
 import pandas as pd
@@ -251,6 +259,27 @@ class SegmentWriter:
             self._fh.close()
             self._closed = True
         self._pending.clear()
+
+
+class ProgressPrinter:
+    def __init__(self, total_segments: int, prefix: str) -> None:
+        self.total_segments = max(1, total_segments)
+        self.prefix = prefix
+        self._completed = 0
+        self._frames = 0
+        self._start_ts = time.time()
+        self._lock = asyncio.Lock()
+
+    async def update(self, *, segment_id: str, frames: int) -> None:
+        async with self._lock:
+            self._completed += 1
+            self._frames += max(0, frames)
+            elapsed = time.time() - self._start_ts
+            avg_fps = (self._frames / elapsed) if elapsed > 0 else 0.0
+            log_event(
+                f"Segment {self._completed}/{self.total_segments} ({segment_id}) wrote {frames} frames; cumulative_frames={self._frames}, avg_fps={avg_fps:.2f}",
+                prefix=self.prefix,
+            )
 
 # =============================
 # Parquet manifest & segment JSON
@@ -517,7 +546,7 @@ async def run(
     stream_flush: bool = True,
     log_prefix: str = "",
 ) -> int:
-    prefix = f"{log_prefix.strip()} " if log_prefix else ""
+    prefix = log_prefix.strip()
 
     parquet_paths = load_parquet_manifest(parquet_manifest)
     parquet_lengths = parquet_lengths_from_manifest(parquet_paths)
@@ -545,6 +574,17 @@ async def run(
 
     order_start = min((seg["__order"] for seg in segments), default=segment_order_start or 0)
     writer = SegmentWriter(Path(out_path), start_order=order_start, flush=stream_flush)
+    if not segments:
+        log_event("No segments provided; output will be empty.", prefix=prefix)
+        await writer.finalize()
+        return 0
+
+    log_event(
+        f"Beginning annotation for {len(segments)} segments (window={window}, stride={stride}, mode={mode}).",
+        prefix=prefix,
+    )
+
+    progress = ProgressPrinter(len(segments), prefix)
 
     # Lazy cache of parquet -> pandas df (only the image column)
     pq_cache: Dict[int, pd.DataFrame] = {}
@@ -573,7 +613,11 @@ async def run(
         start = max(0, start)
         end = min(end, len(df))
         if end <= start:
-            print(f"{prefix}[WARN] Empty segment {seg_id} in pq[{pq_idx}] ({start}, {end}); skipping")
+            log_event(
+                f"WARN: Empty segment {seg_id} in pq[{pq_idx}] ({start}, {end}); skipping",
+                prefix=prefix,
+                stream=sys.stderr,
+            )
             return 0
 
         local_idxs_all = df["_local_index"].iloc[start:end].tolist()
@@ -615,6 +659,7 @@ async def run(
             rows=ordered_objs,
         )
         await writer.submit(result)
+        await progress.update(segment_id=seg_id, frames=len(ordered_objs))
         return len(ordered_objs)
 
     frame_counts: List[int] = []
@@ -628,7 +673,10 @@ async def run(
         await writer.finalize()
 
     total_frames = sum(frame_counts)
-    print(f"{prefix}Wrote {total_frames} frame annotations from {len(segments)} segments to {out_path}")
+    log_event(
+        f"Completed annotation: {total_frames} frames across {len(segments)} segments → {out_path}",
+        prefix=prefix,
+    )
     return total_frames
 
 
@@ -670,6 +718,10 @@ def _worker_entry(
     result_queue: mp.Queue,
 ) -> None:
     log_prefix = f"[worker-{worker_id}]"
+    log_event(
+        f"Starting worker on {len(segments_chunk)} segments → {out_path}",
+        prefix=log_prefix,
+    )
     try:
         total = asyncio.run(
             run(
@@ -695,8 +747,12 @@ def _worker_entry(
                 log_prefix=log_prefix,
             )
         )
+        log_event(
+            f"Finished worker; annotated {total} frames", prefix=log_prefix
+        )
         result_queue.put((worker_id, total))
     except Exception as exc:  # pragma: no cover - surface worker failures
+        log_event(f"Worker failed: {exc}", prefix=log_prefix, stream=sys.stderr)
         result_queue.put((worker_id, exc))
         raise
 
@@ -726,7 +782,12 @@ def main():
     ap.add_argument("--no_stream_flush", action="store_true", help="Disable flushing output file after each segment (higher throughput, less crash resilience).")
     args = ap.parse_args()
 
+    root_prefix = "[main]"
     stream_flush = not args.no_stream_flush
+    log_event(
+        f"CLI start: processes={args.num_processes}, stream_flush={stream_flush}, out={args.out}",
+        prefix=root_prefix,
+    )
 
     cfg = {
         "parquet_manifest": args.parquet_manifest,
@@ -747,6 +808,7 @@ def main():
     }
 
     if args.num_processes <= 1:
+        log_event("Running in single-process mode", prefix=root_prefix)
         asyncio.run(run(
             parquet_manifest=cfg["parquet_manifest"],
             segments_json=cfg["segments_json"],
@@ -765,9 +827,13 @@ def main():
             jpeg_quality=cfg["jpeg_quality"],
             out_path=args.out,
             stream_flush=stream_flush,
+            log_prefix=root_prefix,
         ))
         return
 
+    log_event(
+        f"Running in multi-process mode with {args.num_processes} workers", prefix=root_prefix
+    )
     parquet_paths = load_parquet_manifest(cfg["parquet_manifest"])
     parquet_lengths = parquet_lengths_from_manifest(parquet_paths)
     segments_all = load_segments_json(
@@ -782,7 +848,10 @@ def main():
         final_path = Path(args.out)
         final_path.parent.mkdir(parents=True, exist_ok=True)
         final_path.write_text("", encoding="utf-8")
-        print(f"No segments to annotate; wrote 0 frame annotations to {final_path}")
+        log_event(
+            f"No segments to annotate; wrote 0 frame annotations to {final_path}",
+            prefix=root_prefix,
+        )
         return
 
     for idx, seg in enumerate(segments_all):
@@ -799,6 +868,19 @@ def main():
         if not chunk:
             continue
         part_path = Path(f"{args.out}.part{worker_id:02d}")
+        if part_path.exists():
+            try:
+                part_path.unlink()
+            except Exception as exc:
+                log_event(
+                    f"WARN: could not remove stale shard {part_path}: {exc}",
+                    prefix=root_prefix,
+                    stream=sys.stderr,
+                )
+        log_event(
+            f"Launching worker-{worker_id} for segments[{start}:{end}) → {part_path}",
+            prefix=root_prefix,
+        )
         proc = ctx.Process(
             target=_worker_entry,
             args=(worker_id, cfg, chunk, str(part_path), stream_flush, result_queue),
@@ -816,6 +898,9 @@ def main():
             worker_errors[wid] = payload
         else:
             worker_results[wid] = int(payload)
+            log_event(
+                f"Worker-{wid} reported {worker_results[wid]} frames", prefix=root_prefix
+            )
 
     for wid, proc in processes:
         proc.join()
@@ -829,14 +914,18 @@ def main():
 
     if worker_errors:
         for wid, err in sorted(worker_errors.items()):
-            print(f"[worker-{wid}] failed: {err}", file=sys.stderr)
+            log_event(f"worker-{wid} failed: {err}", prefix=root_prefix, stream=sys.stderr)
         raise SystemExit(1)
 
     total_lines = _merge_part_files(parts, Path(args.out))
     total_frames = sum(worker_results.get(wid, 0) for wid, _ in processes)
-    print(f"Merged {len(parts)} shard files into {args.out} ({total_lines} lines).")
-    print(
-        f"Annotated approximately {total_frames} frames across {len(segments_all)} segments using {len(processes)} workers."
+    log_event(
+        f"Merged {len(parts)} shard files into {args.out} ({total_lines} lines)",
+        prefix=root_prefix,
+    )
+    log_event(
+        f"Annotated ~{total_frames} frames across {len(segments_all)} segments using {len(processes)} workers",
+        prefix=root_prefix,
     )
 
 if __name__ == "__main__":
