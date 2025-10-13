@@ -1,5 +1,8 @@
-import os, io, json, base64, asyncio, tempfile, argparse
+import os, io, json, base64, asyncio, tempfile, argparse, math, sys
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
@@ -182,6 +185,72 @@ def frames_to_mp4_data_url(frames_bgr: List[np.ndarray], fps: int) -> str:
 def make_windows_len(n: int, window: int, stride: int) -> List[Tuple[int, int]]:
     starts = list(range(0, n, stride))
     return [(s, min(s + window, n)) for s in starts if s < n]
+
+
+@dataclass
+class SegmentResult:
+    order: int
+    segment_id: str
+    parquet_idx: int
+    rows: List[Dict[str, Any]]
+    serialized: List[str] = field(default_factory=list, init=False, repr=False)
+
+    def json_lines(self) -> List[str]:
+        if not self.serialized:
+            self.serialized = [json.dumps(row, ensure_ascii=False) for row in self.rows]
+        return self.serialized
+
+
+class SegmentWriter:
+    def __init__(self, output_path: Path, start_order: int, flush: bool = True) -> None:
+        self.output_path = Path(output_path)
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = self.output_path.open("w", encoding="utf-8")
+        self._flush = flush
+        self._next_order = start_order
+        self._pending: Dict[int, SegmentResult] = {}
+        self._lock = asyncio.Lock()
+        self._closed = False
+
+    async def submit(self, result: SegmentResult) -> None:
+        async with self._lock:
+            if self._closed:
+                raise RuntimeError("SegmentWriter is already closed")
+            self._pending[result.order] = result
+            await self._flush_ready_locked()
+
+    async def _flush_ready_locked(self) -> None:
+        while self._next_order in self._pending:
+            result = self._pending.pop(self._next_order)
+            for line in result.json_lines():
+                self._fh.write(line + "\n")
+            if self._flush:
+                self._fh.flush()
+            self._next_order += 1
+
+    async def finalize(self) -> None:
+        async with self._lock:
+            if self._closed:
+                return
+            if self._pending:
+                pending = sorted(self._pending.keys())
+                raise RuntimeError(
+                    f"Cannot finalize writer; pending segments remain: {pending[:8]}"
+                    + (" ..." if len(pending) > 8 else "")
+                )
+            self._fh.flush()
+            self._fh.close()
+            self._closed = True
+
+    def abort(self) -> None:
+        if not self._closed:
+            try:
+                self._fh.flush()
+            except Exception:
+                pass
+            self._fh.close()
+            self._closed = True
+        self._pending.clear()
 
 # =============================
 # Parquet manifest & segment JSON
@@ -442,20 +511,40 @@ async def run(
     concurrency: int = 16,
     structured_output: str = "json_schema",
     jpeg_quality: int = 90,
-    out_path: str = "annotations.jsonl"
-):
-    # Load manifest and parquet lengths
+    out_path: str = "annotations.jsonl",
+    segments_override: Optional[List[Dict[str, Any]]] = None,
+    segment_order_start: Optional[int] = None,
+    stream_flush: bool = True,
+    log_prefix: str = "",
+) -> int:
+    prefix = f"{log_prefix.strip()} " if log_prefix else ""
+
     parquet_paths = load_parquet_manifest(parquet_manifest)
     parquet_lengths = parquet_lengths_from_manifest(parquet_paths)
 
-    # Load segments and normalize/split them into per-parquet subsegments
-    segments = load_segments_json(
-        segments_json,
-        default_task=default_task,
-        parquet_lengths=parquet_lengths,
-        end_inclusive_local=end_inclusive,
-        end_inclusive_total=True  # your JSON's *_total_frame look inclusive
-    )
+    if segments_override is not None:
+        segments: List[Dict[str, Any]] = []
+        base_order = segment_order_start if segment_order_start is not None else 0
+        for idx, seg in enumerate(segments_override):
+            seg_copy = dict(seg)
+            seg_copy.setdefault("__order", base_order + idx)
+            segments.append(seg_copy)
+    else:
+        loaded_segments = load_segments_json(
+            segments_json,
+            default_task=default_task,
+            parquet_lengths=parquet_lengths,
+            end_inclusive_local=end_inclusive,
+            end_inclusive_total=True
+        )
+        segments = []
+        for idx, seg in enumerate(loaded_segments):
+            seg_copy = dict(seg)
+            seg_copy["__order"] = idx
+            segments.append(seg_copy)
+
+    order_start = min((seg["__order"] for seg in segments), default=segment_order_start or 0)
+    writer = SegmentWriter(Path(out_path), start_order=order_start, flush=stream_flush)
 
     # Lazy cache of parquet -> pandas df (only the image column)
     pq_cache: Dict[int, pd.DataFrame] = {}
@@ -465,7 +554,6 @@ async def run(
             return pq_cache[pq_idx]
         path = parquet_paths[pq_idx]
         df = pd.read_parquet(path, columns=[image_col], engine="pyarrow")
-        # Create an implicit local index column to align with your "line number within the parquet"
         df["_local_index"] = np.arange(len(df), dtype=np.int64)
         pq_cache[pq_idx] = df
         return df
@@ -473,25 +561,21 @@ async def run(
     annotator = VLLMAnnotator(base_url=base_url, api_key=api_key, model=model,
                               concurrency=concurrency, structured_output=structured_output)
 
-    results: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
-
-    async def handle_segment(seg: Dict[str, Any]):
-        seg_id   = seg["segment_id"]
-        pq_idx   = seg["parquet_idx"]
-        start    = int(seg["start"])
-        end      = int(seg["end"])   # exclusive
+    async def handle_segment(seg: Dict[str, Any]) -> int:
+        seg_id = seg["segment_id"]
+        pq_idx = seg["parquet_idx"]
+        start = int(seg["start"])
+        end = int(seg["end"])  # exclusive
         task_txt = seg["task"]
 
         df = await load_df_if_needed(pq_idx)
 
-        # Clip to bounds
         start = max(0, start)
-        end   = min(end, len(df))
+        end = min(end, len(df))
         if end <= start:
-            print(f"[WARN] Empty segment {seg_id} in pq[{pq_idx}] ({start}, {end}); skipping")
-            return
+            print(f"{prefix}[WARN] Empty segment {seg_id} in pq[{pq_idx}] ({start}, {end}); skipping")
+            return 0
 
-        # Slice once; we’ll decode per window to keep RAM stable
         local_idxs_all = df["_local_index"].iloc[start:end].tolist()
         imgs_bytes = df[image_col].iloc[start:end].tolist()
 
@@ -510,21 +594,111 @@ async def run(
             ))
 
         window_outputs = await asyncio.gather(*tasks)
+        frame_rows: List[Tuple[int, Dict[str, Any]]] = []
         for window_out in window_outputs:
             for local_idx, obj in window_out.items():
                 obj["_segment_id"] = seg_id
                 obj["_parquet_idx"] = pq_idx
-                results[(seg_id, pq_idx, local_idx)] = obj
+                obj["_segment_order"] = seg["__order"]
+                frame_rows.append((local_idx, obj))
 
-    # Fire all segments
-    await asyncio.gather(*[handle_segment(s) for s in segments])
+        if not frame_rows:
+            return 0
 
-    # Write JSONL (sorted by parquet_idx, then segment, then local frame)
-    with open(out_path, "w", encoding="utf-8") as f:
-        for (_, pq_idx, local_idx), obj in sorted(results.items(), key=lambda kv: (kv[0][1], kv[0][0], kv[0][2])):
-            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        frame_rows.sort(key=lambda item: item[0])
+        ordered_objs = [obj for _, obj in frame_rows]
 
-    print(f"Wrote {len(results)} frame annotations to {out_path}")
+        result = SegmentResult(
+            order=int(seg["__order"]),
+            segment_id=seg_id,
+            parquet_idx=pq_idx,
+            rows=ordered_objs,
+        )
+        await writer.submit(result)
+        return len(ordered_objs)
+
+    frame_counts: List[int] = []
+    try:
+        if segments:
+            frame_counts = await asyncio.gather(*[handle_segment(s) for s in segments])
+    except Exception:
+        writer.abort()
+        raise
+    else:
+        await writer.finalize()
+
+    total_frames = sum(frame_counts)
+    print(f"{prefix}Wrote {total_frames} frame annotations from {len(segments)} segments to {out_path}")
+    return total_frames
+
+
+def _split_ranges(total: int, num_chunks: int) -> List[Tuple[int, int]]:
+    if total <= 0:
+        return []
+    num_chunks = max(1, min(num_chunks, total))
+    chunk = math.ceil(total / num_chunks)
+    ranges: List[Tuple[int, int]] = []
+    start = 0
+    while start < total:
+        end = min(start + chunk, total)
+        ranges.append((start, end))
+        start = end
+    return ranges
+
+
+def _merge_part_files(parts: List[Tuple[int, Path]], final_path: Path) -> int:
+    final_path = Path(final_path)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    total_lines = 0
+    with final_path.open("w", encoding="utf-8") as fout:
+        for _, part in sorted(parts, key=lambda item: item[0]):
+            if not part.exists():
+                continue
+            with part.open("r", encoding="utf-8") as fin:
+                for line in fin:
+                    fout.write(line)
+                    total_lines += 1
+    return total_lines
+
+
+def _worker_entry(
+    worker_id: int,
+    cfg: Dict[str, Any],
+    segments_chunk: List[Dict[str, Any]],
+    out_path: str,
+    stream_flush: bool,
+    result_queue: mp.Queue,
+) -> None:
+    log_prefix = f"[worker-{worker_id}]"
+    try:
+        total = asyncio.run(
+            run(
+                parquet_manifest=cfg["parquet_manifest"],
+                segments_json=cfg["segments_json"],
+                model=cfg["model"],
+                base_url=cfg["base_url"],
+                api_key=cfg["api_key"],
+                default_task=cfg["default_task"],
+                image_col=cfg["image_col"],
+                end_inclusive=cfg["end_inclusive"],
+                mode=cfg["mode"],
+                fps_for_video=cfg["fps"],
+                window=cfg["window"],
+                stride=cfg["stride"],
+                concurrency=cfg["concurrency"],
+                structured_output=cfg["structured_output"],
+                jpeg_quality=cfg["jpeg_quality"],
+                out_path=out_path,
+                segments_override=segments_chunk,
+                segment_order_start=segments_chunk[0]["__order"] if segments_chunk else 0,
+                stream_flush=stream_flush,
+                log_prefix=log_prefix,
+            )
+        )
+        result_queue.put((worker_id, total))
+    except Exception as exc:  # pragma: no cover - surface worker failures
+        result_queue.put((worker_id, exc))
+        raise
 
 # =============================
 # CLI
@@ -548,26 +722,122 @@ def main():
     ap.add_argument("--structured_output", choices=["json_schema","json_object","none"], default="json_schema")
     ap.add_argument("--jpeg_quality", type=int, default=90)
     ap.add_argument("--out", default="annotations.jsonl")
+    ap.add_argument("--num_processes", type=int, default=1, help="Number of worker processes for segment batches.")
+    ap.add_argument("--no_stream_flush", action="store_true", help="Disable flushing output file after each segment (higher throughput, less crash resilience).")
     args = ap.parse_args()
 
-    asyncio.run(run(
-        parquet_manifest=args.parquet_manifest,
-        segments_json=args.segments,
-        model=args.model,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        default_task=args.default_task,
-        image_col=args.image_col,
-        end_inclusive=args.end_inclusive,
-        mode=args.mode,
-        fps_for_video=args.fps,
-        window=args.window,
-        stride=args.stride,
-        concurrency=args.concurrency,
-        structured_output=args.structured_output,
-        jpeg_quality=args.jpeg_quality,
-        out_path=args.out
-    ))
+    stream_flush = not args.no_stream_flush
+
+    cfg = {
+        "parquet_manifest": args.parquet_manifest,
+        "segments_json": args.segments,
+        "model": args.model,
+        "base_url": args.base_url,
+        "api_key": args.api_key,
+        "default_task": args.default_task,
+        "image_col": args.image_col,
+        "end_inclusive": args.end_inclusive,
+        "mode": args.mode,
+        "fps": args.fps,
+        "window": args.window,
+        "stride": args.stride,
+        "concurrency": args.concurrency,
+        "structured_output": args.structured_output,
+        "jpeg_quality": args.jpeg_quality,
+    }
+
+    if args.num_processes <= 1:
+        asyncio.run(run(
+            parquet_manifest=cfg["parquet_manifest"],
+            segments_json=cfg["segments_json"],
+            model=cfg["model"],
+            base_url=cfg["base_url"],
+            api_key=cfg["api_key"],
+            default_task=cfg["default_task"],
+            image_col=cfg["image_col"],
+            end_inclusive=cfg["end_inclusive"],
+            mode=cfg["mode"],
+            fps_for_video=cfg["fps"],
+            window=cfg["window"],
+            stride=cfg["stride"],
+            concurrency=cfg["concurrency"],
+            structured_output=cfg["structured_output"],
+            jpeg_quality=cfg["jpeg_quality"],
+            out_path=args.out,
+            stream_flush=stream_flush,
+        ))
+        return
+
+    parquet_paths = load_parquet_manifest(cfg["parquet_manifest"])
+    parquet_lengths = parquet_lengths_from_manifest(parquet_paths)
+    segments_all = load_segments_json(
+        cfg["segments_json"],
+        default_task=cfg["default_task"],
+        parquet_lengths=parquet_lengths,
+        end_inclusive_local=cfg["end_inclusive"],
+        end_inclusive_total=True,
+    )
+
+    if not segments_all:
+        final_path = Path(args.out)
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        final_path.write_text("", encoding="utf-8")
+        print(f"No segments to annotate; wrote 0 frame annotations to {final_path}")
+        return
+
+    for idx, seg in enumerate(segments_all):
+        seg["__order"] = idx
+
+    ranges = _split_ranges(len(segments_all), args.num_processes)
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue()
+    processes: List[Tuple[int, mp.Process]] = []
+    parts: List[Tuple[int, Path]] = []
+
+    for worker_id, (start, end) in enumerate(ranges):
+        chunk = [dict(seg) for seg in segments_all[start:end]]
+        if not chunk:
+            continue
+        part_path = Path(f"{args.out}.part{worker_id:02d}")
+        proc = ctx.Process(
+            target=_worker_entry,
+            args=(worker_id, cfg, chunk, str(part_path), stream_flush, result_queue),
+        )
+        proc.start()
+        processes.append((worker_id, proc))
+        parts.append((start, part_path))
+
+    worker_results: Dict[int, int] = {}
+    worker_errors: Dict[int, Exception] = {}
+
+    for _ in processes:
+        wid, payload = result_queue.get()
+        if isinstance(payload, Exception):
+            worker_errors[wid] = payload
+        else:
+            worker_results[wid] = int(payload)
+
+    for wid, proc in processes:
+        proc.join()
+
+    result_queue.close()
+    result_queue.join_thread()
+
+    for wid, proc in processes:
+        if proc.exitcode != 0:
+            worker_errors.setdefault(wid, RuntimeError(f"exit code {proc.exitcode}"))
+
+    if worker_errors:
+        for wid, err in sorted(worker_errors.items()):
+            print(f"[worker-{wid}] failed: {err}", file=sys.stderr)
+        raise SystemExit(1)
+
+    total_lines = _merge_part_files(parts, Path(args.out))
+    total_frames = sum(worker_results.get(wid, 0) for wid, _ in processes)
+    print(f"Merged {len(parts)} shard files into {args.out} ({total_lines} lines).")
+    print(
+        f"Annotated approximately {total_frames} frames across {len(segments_all)} segments using {len(processes)} workers."
+    )
 
 if __name__ == "__main__":
     main()
