@@ -12,6 +12,7 @@ Usage example::
         --steady-threshold 4 --anchor-threshold 6 \
         --steady-outliers 1 --history-window 6 \
         --history-threshold 6 --history-outliers 0 \
+        --min-segment-length 20 \
         --min-gap 40 --output run_01_segments.json
 
 Detection heuristic:
@@ -234,6 +235,7 @@ def detect_boundaries(
     history_threshold: float,
     history_outliers: int,
     min_gap: int,
+    min_segment_length: int,
 ) -> List[int]:
     if len(traj) < 2:
         return [0]
@@ -290,7 +292,18 @@ def detect_boundaries(
                     i += steady_window  # skip past steady window to avoid duplicates
                     continue
         i += 1
-    return sorted(boundaries_set)
+    boundaries = sorted(boundaries_set)
+    if min_segment_length > 0:
+        filtered = [boundaries[0]]
+        last = boundaries[0]
+        for b in boundaries[1:]:
+            if b - last < min_segment_length:
+                # Skip boundary that would create too-short segment
+                continue
+            filtered.append(b)
+            last = b
+        boundaries = filtered
+    return boundaries
 
 
 def build_segments(boundaries: Sequence[int], traj: Sequence[TrajectoryPoint], max_frames: Optional[int]) -> List[Segment]:
@@ -385,6 +398,12 @@ def parse_args() -> argparse.Namespace:
         help="Allowed number of history frames still close to the candidate",
     )
     parser.add_argument(
+        "--min-segment-length",
+        type=int,
+        default=5,
+        help="Minimum allowable length (frames) for a segment boundary",
+    )
+    parser.add_argument(
         "--max-frames-per-segment",
         type=int,
         default=None,
@@ -428,6 +447,7 @@ def main() -> None:
         history_threshold=args.history_threshold,
         history_outliers=args.history_outliers,
         min_gap=args.min_gap,
+        min_segment_length=args.min_segment_length,
     )
     segments = build_segments(boundaries, traj, args.max_frames_per_segment)
     dump_segments(segments)
@@ -445,6 +465,7 @@ def main() -> None:
             "history_outliers": args.history_outliers,
             "max_frames_per_segment": args.max_frames_per_segment,
             "task_column": args.task_column if args.parquet else None,
+            "min_segment_length": args.min_segment_length,
             "min_gap": args.min_gap,
             "segments": [seg.to_dict() for seg in segments],
         }
