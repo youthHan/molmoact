@@ -145,13 +145,25 @@ def select_segments(
     explicit_indices: Optional[Sequence[int]],
     sample_count: int,
     seed: Optional[int],
+    include_ids: Optional[Sequence[int]] = None,
 ) -> List[tuple[int, Segment]]:
+    indices: List[int] = []
     if explicit_indices:
+        indices.extend(explicit_indices)
+    if include_ids:
+        indices.extend(include_ids)
+
+    if indices:
         chosen = []
-        for idx in explicit_indices:
+        seen = set()
+        for idx in indices:
             if idx < 0 or idx >= len(segments):
                 raise IndexError(f"Segment index {idx} out of range (len={len(segments)})")
+            if idx in seen:
+                continue
+            seen.add(idx)
             chosen.append((idx, segments[idx]))
+        chosen.sort(key=lambda x: x[0])
         return chosen
 
     population = list(enumerate(segments))
@@ -407,6 +419,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Explicit segment indices to export (overrides --sample-count)",
     )
+    parser.add_argument(
+        "--include-neighbors",
+        nargs="*",
+        type=int,
+        help="Additional segment indices (e.g., neighbors) always included",
+    )
     parser.add_argument("--random-seed", type=int, help="Random seed for sampling segments")
     parser.add_argument("--output-dir", required=True, help="Directory to write individual videos")
     parser.add_argument("--concat-output", help="Optional single video containing all sampled segments")
@@ -456,7 +474,7 @@ def main() -> None:
     else:
         raise ValueError("Provide either --frames-dir or --parquet inputs")
 
-    chosen = select_segments(segments, args.segments, args.sample_count, args.random_seed)
+    chosen = select_segments(segments, args.segments, args.sample_count, args.random_seed, args.include_neighbors)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
