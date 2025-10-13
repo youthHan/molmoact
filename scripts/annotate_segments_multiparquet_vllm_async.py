@@ -471,6 +471,26 @@ def run(args: argparse.Namespace) -> None:
         print("No segments to annotate; wrote empty file.")
         return
 
+    if args.shard_count < 1:
+        raise ValueError("--shard-count must be >= 1")
+    if args.shard_index < 0 or args.shard_index >= args.shard_count:
+        raise ValueError("--shard-index must satisfy 0 <= shard_index < shard_count")
+
+    if args.shard_count > 1:
+        original_total = len(segments)
+        segments = [
+            seg for idx, seg in enumerate(segments)
+            if idx % args.shard_count == args.shard_index
+        ]
+        print(
+            f"Sharding enabled: using shard {args.shard_index}/{args.shard_count} with {len(segments)} of {original_total} segments.",
+            flush=True,
+        )
+        if not segments:
+            print("Selected shard has no segments; nothing to do.")
+            out_path.write_text("", encoding="utf-8")
+            return
+
     dtype = parse_dtype(args.dtype)
     annotator = HFAnnotator(
         model_name=args.model,
@@ -540,6 +560,8 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--video_max_pixels", type=int, default=None)
     ap.add_argument("--video_total_pixels", type=int, default=None)
     ap.add_argument("--video_sample_fps", type=float, default=None, help="Override FPS metadata sent to the model.")
+    ap.add_argument("--shard-index", type=int, default=0, help="Shard index for multi-process runs (0-based).")
+    ap.add_argument("--shard-count", type=int, default=1, help="Total number of shards when splitting work across processes.")
     return ap
 
 
