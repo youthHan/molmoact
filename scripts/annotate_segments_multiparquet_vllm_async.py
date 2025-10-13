@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
+from datetime import datetime
 import pyarrow.parquet as pq
 from qwen_vl_utils import process_vision_info
 from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -229,6 +230,10 @@ def parse_dtype(dtype_str: str) -> Optional[torch.dtype]:
     return mapping[key]
 
 
+class ParseError(RuntimeError):
+    pass
+
+
 class HFAnnotator:
     def __init__(
         self,
@@ -241,6 +246,7 @@ class HFAnnotator:
         video_max_pixels: Optional[int],
         video_total_pixels: Optional[int],
         video_sample_fps: Optional[float],
+        debug_dir: Optional[Path],
     ) -> None:
         print(f"Loading processor {model_name} ...", flush=True)
         self.processor = AutoProcessor.from_pretrained(model_name)
@@ -257,6 +263,9 @@ class HFAnnotator:
         self.video_total_pixels = video_total_pixels
         self.video_sample_fps = video_sample_fps
         self.image_patch_size = getattr(self.processor.image_processor, "patch_size", 16)
+        self.debug_dir = debug_dir
+        if self.debug_dir is not None:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
 
     def annotate_window(
         self,
@@ -342,19 +351,45 @@ class HFAnnotator:
             for path in temp_files:
                 path.unlink(missing_ok=True)
 
-        return self._json_array_to_dict(text_output, frame_indices)
+        try:
+            return self._json_array_to_dict(text_output, frame_indices)
+        except ParseError as exc:
+            self._handle_parse_failure(segment_id, text_output, exc)
+            return {}
+
+    def _handle_parse_failure(self, segment_id: str, raw: str, exc: Exception) -> None:
+        msg = f"[WARN] Segment {segment_id}: model output not valid JSON ({exc}); skipping window"
+        print(msg, file=sys.stderr)
+        if self.debug_dir is not None:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            name = f"{segment_id.replace('/', '_')}_{ts}.txt"
+            path = self.debug_dir / name
+            try:
+                path.write_text(raw, encoding="utf-8")
+                print(f"[INFO] Saved raw response to {path}", file=sys.stderr)
+            except Exception as save_exc:
+                print(f"[WARN] Failed to save debug response: {save_exc}", file=sys.stderr)
 
     @staticmethod
     def _json_array_to_dict(raw: str, frame_indices: Sequence[int]) -> Dict[int, Dict[str, Any]]:
         first = raw.find("[")
         last = raw.rfind("]")
         snippet = raw[first : last + 1] if first != -1 and last != -1 and last > first else raw
+        # Strip common markdown code fences
+        snippet = snippet.strip()
+        if snippet.startswith("```"):
+            lines = snippet.splitlines()
+            if lines:
+                lines = lines[1:]
+            while lines and lines[-1].strip().startswith("```"):
+                lines.pop()
+            snippet = "\n".join(lines)
         try:
             parsed = json.loads(snippet)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Model returned non-JSON output: {raw[:200]}...") from exc
+            raise ParseError(f"JSON decode error: {exc}") from exc
         if not isinstance(parsed, list):
-            raise RuntimeError("Model response is not a JSON array")
+            raise ParseError("Model response is not a JSON array")
 
         result: Dict[int, Dict[str, Any]] = {}
         for idx, obj in enumerate(parsed):
@@ -447,6 +482,7 @@ def run(args: argparse.Namespace) -> None:
         video_max_pixels=args.video_max_pixels,
         video_total_pixels=args.video_total_pixels,
         video_sample_fps=args.video_sample_fps,
+        debug_dir=out_path.parent / f"{out_path.name}.responses",
     )
 
     df_cache: Dict[int, pd.DataFrame] = {}
