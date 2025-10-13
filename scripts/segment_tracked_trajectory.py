@@ -300,17 +300,43 @@ def detect_boundaries(
 
     sorted_bounds = sorted(boundary_flags.items())
     final_bounds: List[int] = []
-    last_kept = None
-    for idx, mandatory in sorted_bounds:
-        if last_kept is None:
+    if not sorted_bounds:
+        return [0]
+
+    final_bounds.append(sorted_bounds[0][0])
+    last_kept_idx = sorted_bounds[0][0]
+
+    for idx, mandatory in sorted_bounds[1:]:
+        segment_len = idx - last_kept_idx
+        if mandatory:
+            # ensure preceding optional boundaries are removed if they cause short segments
+            while segment_len < min_segment_length and len(final_bounds) > 0:
+                prev_idx = final_bounds[-1]
+                if boundary_flags.get(prev_idx, True):
+                    break
+                final_bounds.pop()
+                if final_bounds:
+                    last_kept_idx = final_bounds[-1]
+                else:
+                    last_kept_idx = sorted_bounds[0][0]
+                segment_len = idx - last_kept_idx
+                if not final_bounds:
+                    break
             final_bounds.append(idx)
-            last_kept = idx
-            continue
-        segment_len = idx - last_kept
-        if mandatory or segment_len >= min_segment_length:
-            final_bounds.append(idx)
-            last_kept = idx
-    return final_bounds
+            last_kept_idx = idx
+        else:
+            if segment_len >= min_segment_length:
+                final_bounds.append(idx)
+                last_kept_idx = idx
+
+    # tail check: ensure final segment length meets minimum when boundary optional
+    total_len = len(traj)
+    if final_bounds:
+        last_idx = final_bounds[-1]
+        if total_len - last_idx < min_segment_length and not boundary_flags.get(last_idx, True):
+            final_bounds.pop()
+
+    return final_bounds or [0]
 
 
 def build_segments(boundaries: Sequence[int], traj: Sequence[TrajectoryPoint], max_frames: Optional[int]) -> List[Segment]:
