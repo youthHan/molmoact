@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import multiprocessing as mp
+import re
 
 
 def log_event(message: str, *, prefix: str = "", stream = sys.stdout) -> None:
@@ -11,6 +12,14 @@ def log_event(message: str, *, prefix: str = "", stream = sys.stdout) -> None:
     timestamp = datetime.now().strftime("%H:%M:%S")
     prefix_text = f"{prefix.strip()} " if prefix else ""
     print(f"[{timestamp}] {prefix_text}{message}", file=stream, flush=True)
+
+
+def _safe_filename(text: str, *, max_len: int = 120) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", text.strip())
+    cleaned = cleaned.strip("._") or "resp"
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len]
+    return cleaned
 
 import numpy as np
 import pandas as pd
@@ -469,12 +478,54 @@ class VLLMAnnotator:
         concurrency: int = 8,
         structured_output: str = "json_schema",
         log_prefix: str = "",
+        debug_dir: Optional[Path] = None,
     ):
         self.client = AsyncOpenAI(base_url=base_url, api_key=api_key)
         self.model = model
         self.sem = asyncio.Semaphore(concurrency)
         self.structured_output = structured_output  # "json_schema" | "json_object" | "none"
         self.log_prefix = log_prefix.strip()
+        self.debug_dir = Path(debug_dir) if debug_dir is not None else None
+        if self.debug_dir is not None:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+
+    def _persist_failure(self, segment_id: str, content: str) -> Optional[Path]:
+        if self.debug_dir is None:
+            return None
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = f"{_safe_filename(segment_id)}_{ts}.txt"
+        path = self.debug_dir / filename
+        try:
+            path.write_text(content, encoding="utf-8")
+            return path
+        except Exception as exc:  # pragma: no cover - best effort only
+            log_event(f"WARN: failed to write debug response {path}: {exc}", prefix=self.log_prefix, stream=sys.stderr)
+            return None
+
+    def _handle_parse_failure(
+        self,
+        *,
+        segment_id: str,
+        frame_count: int,
+        response_text: str,
+        error: Exception,
+    ) -> None:
+        snippet = response_text[:400].replace("\n", " ")
+        log_event(
+            f"ERROR: JSON parse failed for segment={segment_id}, frames={frame_count}; snippet={snippet!r}",
+            prefix=self.log_prefix,
+            stream=sys.stderr,
+        )
+        saved_path = self._persist_failure(segment_id, response_text)
+        if saved_path is not None:
+            log_event(
+                f"Saved raw response to {saved_path}",
+                prefix=self.log_prefix,
+                stream=sys.stderr,
+            )
+        raise RuntimeError(
+            f"Failed to parse model response for segment {segment_id}; see logs for details."
+        ) from error
 
     async def annotate_window(
         self,
@@ -538,12 +589,26 @@ class VLLMAnnotator:
         # In json_schema/json_object modes, it's already valid JSON:
         try:
             data = json.loads(txt)
-        except Exception:
+        except Exception as primary_exc:
             # fallback: try to extract the first JSON array
             start, end = txt.find('['), txt.rfind(']')
             if start == -1 or end == -1 or end <= start:
-                raise RuntimeError(f"Cannot parse JSON list from model output: {txt[:300]}...")
-            data = json.loads(txt[start:end+1])
+                self._handle_parse_failure(
+                    segment_id=segment_id,
+                    frame_count=len(frames_bgr),
+                    response_text=txt,
+                    error=primary_exc,
+                )
+            candidate = txt[start:end+1]
+            try:
+                data = json.loads(candidate)
+            except Exception as exc:
+                self._handle_parse_failure(
+                    segment_id=segment_id,
+                    frame_count=len(frames_bgr),
+                    response_text=txt,
+                    error=exc,
+                )
 
         out = {}
         for i, obj in enumerate(data):
@@ -607,8 +672,10 @@ async def run(
             seg_copy["__order"] = idx
             segments.append(seg_copy)
 
+    out_path_obj = Path(out_path)
+    response_debug_dir = out_path_obj.parent / f"{out_path_obj.name}.responses"
     order_start = min((seg["__order"] for seg in segments), default=segment_order_start or 0)
-    writer = SegmentWriter(Path(out_path), start_order=order_start, flush=stream_flush)
+    writer = SegmentWriter(out_path_obj, start_order=order_start, flush=stream_flush)
     if not segments:
         log_event("No segments provided; output will be empty.", prefix=prefix)
         await writer.finalize()
@@ -641,6 +708,7 @@ async def run(
         concurrency=concurrency,
         structured_output=structured_output,
         log_prefix=prefix,
+        debug_dir=response_debug_dir,
     )
 
     async def handle_segment(seg: Dict[str, Any]) -> int:
