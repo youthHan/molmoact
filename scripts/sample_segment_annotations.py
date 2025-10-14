@@ -314,12 +314,19 @@ def update_conversation(value, points_str: str, strict: bool = False) -> str:
         coord_match = coord_pat.search(text, pos=start)
         if coord_match:
             return text[:coord_match.start()] + points_str + text[coord_match.end():]
+        # If we're in strict mode and we found the anchor but not the coord list following it,
+        # do not modify anything else.
+        if strict:
+            raise ValueError("Anchor found but no trajectory list followed to replace in conversations text")
 
     # 3) Last resort: replace the first coord list anywhere in the text
     first_coord_pat = re.compile(coord)
     coord_match = first_coord_pat.search(text)
     if coord_match:
-        return text[:coord_match.start()] + points_str + text[coord_match.end():]
+        # Only allow this fallback when not strict, to avoid touching unrelated lists.
+        if not strict:
+            return text[:coord_match.start()] + points_str + text[coord_match.end():]
+        raise ValueError("No anchored trajectory list found to replace in conversations text")
 
     # 4) Append or raise if nothing matched
     if strict:
@@ -346,109 +353,80 @@ def sample_annotations(
         metadata = pf.metadata
         num_groups = metadata.num_row_groups if metadata is not None else 1
         local_index = 0
-        last_annotation_value = None
-        last_annotation_idx = -1
-        last_annotation_payload: Optional[Dict] = None
         for rg_idx in range(num_groups):
             table = pf.read_row_group(rg_idx, columns=[annotation_column])
             rows = table.to_pylist()
             for row in rows:
                 value = row.get(annotation_column) if isinstance(row, dict) else row
-                if value:
-                    if (
-                        skip_duplicate_annotations
-                        and value == last_annotation_value
-                        and local_index == last_annotation_idx + 1
-                        and last_annotation_payload is not None
-                    ):
-                        global_idx = shard_offsets[shard_idx][1] + local_index
-                        dup_entry = {
-                            "parquet_idx": shard_idx,
-                            "local_row_idx": local_index,
-                            "parquet_path": str(path),
-                            "global_frame_idx": global_idx,
-                            "segment_idx": last_annotation_payload["segment_idx"],
-                            "segment_frame_idx": last_annotation_payload["segment_frame_idx"],
-                            "annotation": value,
-                            "task": last_annotation_payload.get("task"),
-                            "samples": last_annotation_payload["samples"],
-                            "points_str": last_annotation_payload["points_str"],
-                        }
-                        samples.append(dup_entry)
-                        # Do NOT update conversations for duplicate rows with null annotations
+                global_idx = shard_offsets[shard_idx][1] + local_index
+                segment = find_segment_by_global(global_idx, sorted_segments)
+                if segment is None:
+                    local_index += 1
+                    continue
+                segment_frame_idx = global_idx - segment.start_total_frame
+                track_key = (segment.segment_idx, segment_frame_idx)
+                track = track_lookup.get(track_key)
+                if track is None:
+                    local_index += 1
+                    continue
+
+                sample_indices = uniform_sample(
+                    segment.start_total_frame,
+                    segment.end_total_frame,
+                    global_idx,
+                    max_samples,
+                )
+                sample_list: List[Dict] = []
+                for sample_global in sample_indices:
+                    seg_frame_idx = sample_global - segment.start_total_frame
+                    track_sample = track_lookup.get((segment.segment_idx, seg_frame_idx))
+                    if track_sample is None:
+                        continue
+                    sample_parquet_idx, sample_local_idx = (segment.parquet_idx, None)
+                    if segment.parquet_idx is not None:
+                        sample_local_idx = segment.start_local_frame + seg_frame_idx
                     else:
-                        global_idx = shard_offsets[shard_idx][1] + local_index
-                        segment = find_segment_by_global(global_idx, sorted_segments)
-                        if segment is None:
-                            # Annotation not within tracked segment; skip
-                            last_annotation_value = value
-                            last_annotation_idx = local_index
-                            last_annotation_payload = None
-                            local_index += 1
-                            continue
-                        segment_frame_idx = global_idx - segment.start_total_frame
-                        track_key = (segment.segment_idx, segment_frame_idx)
-                        track = track_lookup.get(track_key)
-                        if track is None:
-                            last_annotation_value = value
-                            last_annotation_idx = local_index
-                            last_annotation_payload = None
-                            local_index += 1
-                            continue
-
-                        sample_indices = uniform_sample(
-                            segment.start_total_frame,
-                            segment.end_total_frame,
-                            global_idx,
-                            max_samples,
-                        )
-
-                        sample_list: List[Dict] = []
-                        for sample_global in sample_indices:
-                            seg_frame_idx = sample_global - segment.start_total_frame
-                            track_sample = track_lookup.get((segment.segment_idx, seg_frame_idx))
-                            if track_sample is None:
-                                continue
-                            sample_parquet_idx, sample_local_idx = (segment.parquet_idx, None)
-                            if segment.parquet_idx is not None:
-                                sample_local_idx = segment.start_local_frame + seg_frame_idx
-                            else:
-                                sample_parquet_idx, sample_local_idx = global_to_parquet(sample_global, shard_offsets)
-                            sample_list.append(
-                                {
-                                    "segment_frame_idx": seg_frame_idx,
-                                    "global_frame_idx": sample_global,
-                                    "parquet_idx": sample_parquet_idx,
-                                    "local_row_idx": sample_local_idx,
-                                    "x": track_sample.x,
-                                    "y": track_sample.y,
-                                    "smoothed_x": track_sample.smoothed_x,
-                                    "smoothed_y": track_sample.smoothed_y,
-                                    "score": track_sample.score,
-                                }
-                            )
-
-                        points_str = format_points(sample_list)
-                        sample_entry = {
-                            "parquet_idx": shard_idx,
-                            "local_row_idx": local_index,
-                            "parquet_path": str(path),
-                            "global_frame_idx": global_idx,
-                            "segment_idx": segment.segment_idx,
-                            "segment_frame_idx": segment_frame_idx,
-                            "annotation": value,
-                            "task": segment.task,
-                            "samples": sample_list,
-                            "points_str": points_str,
+                        sample_parquet_idx, sample_local_idx = global_to_parquet(sample_global, shard_offsets)
+                    sample_list.append(
+                        {
+                            "segment_frame_idx": seg_frame_idx,
+                            "global_frame_idx": sample_global,
+                            "parquet_idx": sample_parquet_idx,
+                            "local_row_idx": sample_local_idx,
+                            "x": track_sample.x,
+                            "y": track_sample.y,
+                            "smoothed_x": track_sample.smoothed_x,
+                            "smoothed_y": track_sample.smoothed_y,
+                            "score": track_sample.score,
                         }
-                        samples.append(sample_entry)
-                        updates.setdefault(shard_idx, {})[local_index] = {
-                            "annotation": points_str,
-                            "conversation": points_str,
-                        }
-                        last_annotation_payload = sample_entry
-                    last_annotation_value = value
-                    last_annotation_idx = local_index
+                    )
+
+                points_str = format_points(sample_list)
+                sample_entry = {
+                    "parquet_idx": shard_idx,
+                    "local_row_idx": local_index,
+                    "parquet_path": str(path),
+                    "global_frame_idx": global_idx,
+                    "segment_idx": segment.segment_idx,
+                    "segment_frame_idx": segment_frame_idx,
+                    "annotation": value,
+                    "task": segment.task,
+                    "samples": sample_list,
+                    "points_str": points_str,
+                }
+                samples.append(sample_entry)
+
+                if value is None or value == "":
+                    # Update conversations only
+                    updates.setdefault(shard_idx, {})[local_index] = {
+                        "annotation": None,
+                        "conversation": points_str,
+                    }
+                else:
+                    # Update annotation only
+                    updates.setdefault(shard_idx, {})[local_index] = {
+                        "annotation": points_str,
+                    }
                 local_index += 1
     return samples, updates
 
