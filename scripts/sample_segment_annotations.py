@@ -137,7 +137,13 @@ def expand_parquet_tokens(tokens: Sequence[str]) -> List[Path]:
     return unique
 
 
-def load_tracks(tracks_dir: Optional[Path], combined_path: Optional[Path]) -> Dict[Tuple[int, int], TrackRecord]:
+def _expand_glob(pattern: str) -> List[Path]:
+    expanded = os.path.expanduser(pattern)
+    matches = [Path(p) for p in glob.glob(expanded)]
+    return sorted(path for path in matches if path.is_file())
+
+
+def load_tracks(tracks_dir: Optional[str], combined_path: Optional[Path]) -> Dict[Tuple[int, int], TrackRecord]:
     if tracks_dir is None and combined_path is None:
         raise ValueError("Either --tracks-dir or --combined-tracks must be provided")
 
@@ -164,7 +170,12 @@ def load_tracks(tracks_dir: Optional[Path], combined_path: Optional[Path]) -> Di
             )
             records[(seg_idx, seg_frame)] = rec
     if tracks_dir is not None:
-        for file in sorted(tracks_dir.glob("segment_*.json")):
+        track_files: List[Path] = []
+        if os.path.isdir(os.path.expanduser(tracks_dir)):
+            track_files = sorted(Path(tracks_dir).glob("segment_*.json"))
+        else:
+            track_files = _expand_glob(tracks_dir)
+        for file in track_files:
             seg_entries = json.loads(file.read_text())
             for entry in seg_entries:
                 seg_idx = int(entry["segment_idx"])
