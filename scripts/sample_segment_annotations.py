@@ -294,7 +294,8 @@ def update_conversation(value, points_str: str, strict: bool = False) -> str:
     # Regex for a coordinate list like [[x,y],[x,y],...] with flexible spaces
     coord = r"\[(?:\s*\[\s*\d+\s*,\s*\d+\s*\]\s*,?\s*)+\]"
     # Anchor phrase — case-insensitive, flexible whitespace
-    anchor = r"(The\s+trajectory\s+of\s+the\s+end\s+effector\s+in\s+the\s+first\s+image\s+is\s*)"
+    # Allow optional punctuation (colon/dash) between 'is' and the list
+    anchor = r"(The\s+trajectory\s+of\s+the\s+end\s+effector\s+in\s+the\s+first\s+image\s+is\s*[:\-–—]?\s*)"
 
     # 1) Try anchored replacement
     anchored_pat = re.compile(anchor + coord, flags=re.IGNORECASE | re.DOTALL)
@@ -374,10 +375,7 @@ def sample_annotations(
                             "points_str": last_annotation_payload["points_str"],
                         }
                         samples.append(dup_entry)
-                        updates.setdefault(shard_idx, {})[local_index] = {
-                            "annotation": None,
-                            "conversation": last_annotation_payload["points_str"],
-                        }
+                        # Do NOT update conversations for duplicate rows with null annotations
                     else:
                         global_idx = shard_offsets[shard_idx][1] + local_index
                         segment = find_segment_by_global(global_idx, sorted_segments)
@@ -489,12 +487,12 @@ def write_updated_parquet(
                 )
             annotation_val = payload.get("annotation")
             if annotation_val is not None:
+                # Update both annotation and conversations only for rows with non-null annotations
                 ann_col[local_idx] = annotation_val
-            if conv_col is not None and payload.get("conversation") is not None:
-                strict = payload.get("annotation") is None
-                conv_col[local_idx] = update_conversation(
-                    conv_col[local_idx], payload["conversation"], strict=strict
-                )
+                if conv_col is not None and payload.get("conversation") is not None:
+                    conv_col[local_idx] = update_conversation(
+                        conv_col[local_idx], payload["conversation"], strict=True
+                    )
 
         new_table = table.set_column(
             table.column_names.index(annotation_column),
