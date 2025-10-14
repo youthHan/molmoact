@@ -278,7 +278,7 @@ def normalize_conversation_value(value) -> Optional[str]:
     return json.dumps(value)
 
 
-def update_conversation(value, points_str: str) -> str:
+def update_conversation(value, points_str: str, strict: bool = False) -> str:
     """Replace the trajectory list attached to a known anchor sentence.
 
     We prefer replacing only the coordinate list that follows the sentence
@@ -320,7 +320,9 @@ def update_conversation(value, points_str: str) -> str:
     if coord_match:
         return text[:coord_match.start()] + points_str + text[coord_match.end():]
 
-    # 4) Append if nothing matched
+    # 4) Append or raise if nothing matched
+    if strict:
+        raise ValueError("No trajectory coordinate list found to replace in conversations text")
     return text.rstrip() + "\n" + points_str
 
 
