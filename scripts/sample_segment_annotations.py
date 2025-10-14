@@ -278,17 +278,50 @@ def normalize_conversation_value(value) -> Optional[str]:
     return json.dumps(value)
 
 
-def update_conversation(value, points_str: str):
+def update_conversation(value, points_str: str) -> str:
+    """Replace the trajectory list attached to a known anchor sentence.
+
+    We prefer replacing only the coordinate list that follows the sentence
+    "The trajectory of the end effector in the first image is ..." to avoid
+    touching other bracketed content (e.g., DEPTH tokens). If the anchor is
+    not found, we fall back to replacing the first coordinate list anywhere; if
+    that also fails, append the points at the end.
+    """
     text = normalize_conversation_value(value)
     if text is None:
-        text = points_str
+        return points_str
 
-    pattern = r"\[\s*\[\s*\d+\s*,\s*\d+\s*\](?:\s*,\s*\[\s*\d+\s*,\s*\d+\s*\]\s*)*\]"
-    replaced, count = re.subn(pattern, points_str, text, count=1)
-    if count == 0:
-        # append if no existing pattern found
-        replaced = text.rstrip() + "\n" + points_str
-    return replaced
+    # Regex for a coordinate list like [[x,y],[x,y],...] with flexible spaces
+    coord = r"\[(?:\s*\[\s*\d+\s*,\s*\d+\s*\]\s*,?\s*)+\]"
+    # Anchor phrase — case-insensitive, flexible whitespace
+    anchor = r"(The\s+trajectory\s+of\s+the\s+end\s+effector\s+in\s+the\s+first\s+image\s+is\s*)"
+
+    # 1) Try anchored replacement
+    anchored_pat = re.compile(anchor + coord, flags=re.IGNORECASE | re.DOTALL)
+    def _anchored_sub(m: re.Match) -> str:
+        return m.group(1) + points_str
+
+    new_text, n = anchored_pat.subn(_anchored_sub, text, count=1)
+    if n > 0:
+        return new_text
+
+    # 2) Fallback: find anchor, then replace the next coord list after it
+    anchor_only = re.search(anchor, text, flags=re.IGNORECASE)
+    if anchor_only:
+        start = anchor_only.end()
+        coord_pat = re.compile(coord)
+        coord_match = coord_pat.search(text, pos=start)
+        if coord_match:
+            return text[:coord_match.start()] + points_str + text[coord_match.end():]
+
+    # 3) Last resort: replace the first coord list anywhere in the text
+    first_coord_pat = re.compile(coord)
+    coord_match = first_coord_pat.search(text)
+    if coord_match:
+        return text[:coord_match.start()] + points_str + text[coord_match.end():]
+
+    # 4) Append if nothing matched
+    return text.rstrip() + "\n" + points_str
 
 
 def sample_annotations(
@@ -456,7 +489,10 @@ def write_updated_parquet(
             if annotation_val is not None:
                 ann_col[local_idx] = annotation_val
             if conv_col is not None and payload.get("conversation") is not None:
-                conv_col[local_idx] = update_conversation(conv_col[local_idx], payload["conversation"])
+                strict = payload.get("annotation") is None
+                conv_col[local_idx] = update_conversation(
+                    conv_col[local_idx], payload["conversation"], strict=strict
+                )
 
         new_table = table.set_column(
             table.column_names.index(annotation_column),
