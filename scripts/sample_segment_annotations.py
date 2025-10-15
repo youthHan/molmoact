@@ -258,8 +258,13 @@ def uniform_sample(segment_start: int, segment_end: int, start_idx: int, max_sam
     return indices
 
 
-def format_points(sample_list: List[Dict]) -> str:
-    coords = []
+def format_points(sample_list: List[Dict]) -> Tuple[List[List[int]], str]:
+    """Return (coords_list, compact_json_str) for the sampled points.
+
+    - coords_list: Python list[[x,y], ...] suitable for Parquet annotation column
+    - compact_json_str: no spaces, suitable for in-text replacement in conversations
+    """
+    coords: List[List[int]] = []
     for sample in sample_list:
         x = sample.get("smoothed_x")
         y = sample.get("smoothed_y")
@@ -267,7 +272,7 @@ def format_points(sample_list: List[Dict]) -> str:
             x = sample.get("x", 0.0)
             y = sample.get("y", 0.0)
         coords.append([int(round(x)), int(round(y))])
-    return json.dumps(coords)
+    return coords, json.dumps(coords, separators=(",", ":"))
 
 
 def normalize_conversation_value(value) -> Optional[str]:
@@ -401,7 +406,7 @@ def sample_annotations(
                         }
                     )
 
-                points_str = format_points(sample_list)
+                coords, points_str = format_points(sample_list)
                 sample_entry = {
                     "parquet_idx": shard_idx,
                     "local_row_idx": local_index,
@@ -425,7 +430,7 @@ def sample_annotations(
                 else:
                     # Update annotation only
                     updates.setdefault(shard_idx, {})[local_index] = {
-                        "annotation": points_str,
+                        "annotation": coords,
                     }
                 local_index += 1
     return samples, updates
@@ -467,6 +472,12 @@ def write_updated_parquet(
             if annotation_val is not None:
                 # Update both annotation and conversations only for rows with non-null annotations
                 ann_col[local_idx] = annotation_val
+                if conv_col is not None and payload.get("conversation") is not None:
+                    conv_col[local_idx] = update_conversation(
+                        conv_col[local_idx], payload["conversation"], strict=True
+                    )
+            else:
+                # annotation is null -> update conversations only
                 if conv_col is not None and payload.get("conversation") is not None:
                     conv_col[local_idx] = update_conversation(
                         conv_col[local_idx], payload["conversation"], strict=True
