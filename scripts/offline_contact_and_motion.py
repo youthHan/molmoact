@@ -39,6 +39,7 @@ import argparse
 import json
 import math
 import os
+import glob as _glob
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -68,7 +69,7 @@ def expand_parquet_tokens(tokens: Sequence[str]) -> List[Path]:
         if candidate.is_file() and candidate.suffix == ".parquet":
             paths.append(candidate)
             continue
-        for match in list(Path().glob(expanded)):
+        for match in _glob.glob(expanded):
             m = Path(match)
             if m.is_file() and m.suffix == ".parquet":
                 paths.append(m)
@@ -149,6 +150,54 @@ def load_frames_from_parquet(
     return frames
 
 
+def load_frames_from_parquet_by_indices(
+    parquet_tokens: Sequence[str],
+    image_column: str,
+    global_indices: Sequence[int],
+) -> List[Image.Image]:
+    """Load frames from sharded parquet using absolute global row indices.
+
+    The output order matches the order of indices in `global_indices`.
+    """
+    if pq is None:
+        raise RuntimeError("pyarrow is required for --parquet inputs")
+    files = expand_parquet_tokens(parquet_tokens)
+    if not files:
+        raise FileNotFoundError("No parquet files located for --parquet inputs")
+
+    positions: Dict[int, List[int]] = {}
+    for pos, gi in enumerate(global_indices):
+        positions.setdefault(int(gi), []).append(pos)
+    total_needed = len(global_indices)
+    results: List[Optional[Image.Image]] = [None] * total_needed
+
+    found = 0
+    global_idx = 0
+    for path in files:
+        pf = pq.ParquetFile(path)
+        meta = pf.metadata
+        num_groups = meta.num_row_groups if meta is not None else 1
+        for rg in range(num_groups):
+            table = pf.read_row_group(rg, columns=[image_column])
+            rows = table.to_pylist()
+            for row in rows:
+                if global_idx in positions:
+                    value = row.get(image_column) if isinstance(row, dict) else row
+                    img = _to_pil_from_any(value).convert("RGB")
+                    for pos in positions[global_idx]:
+                        results[pos] = img.copy()
+                        found += 1
+                    img.close()
+                global_idx += 1
+
+    missing = [i for i, im in enumerate(results) if im is None]
+    if missing:
+        raise RuntimeError(
+            f"Failed to fetch {len(missing)} frames by global indices. Example missing positions: {missing[:10]}"
+        )
+    return [im for im in results if im is not None]
+
+
 def collect_frames(args: argparse.Namespace) -> List[Image.Image]:
     if args.parquet:
         return load_frames_from_parquet(
@@ -184,6 +233,7 @@ class GripperPoint:
     frame_idx: int
     x: float
     y: float
+    global_frame_idx: Optional[int] = None
 
 
 def load_gripper_track(path: Path) -> List[GripperPoint]:
@@ -196,7 +246,11 @@ def load_gripper_track(path: Path) -> List[GripperPoint]:
         sy = row.get("smoothed_y")
         x = float(sx if sx is not None else row.get("x", 0.0))
         y = float(sy if sy is not None else row.get("y", 0.0))
-        pts.append(GripperPoint(frame_idx=int(row.get("frame_idx", len(pts))), x=x, y=y))
+        gfi = row.get("global_frame_idx")
+        if gfi is None:
+            gfi = row.get("total_frame_idx")
+        gfi = int(gfi) if gfi is not None else None
+        pts.append(GripperPoint(frame_idx=int(row.get("frame_idx", len(pts))), x=x, y=y, global_frame_idx=gfi))
     pts.sort(key=lambda p: p.frame_idx)
     return pts
 
@@ -595,16 +649,26 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load gripper first to support parquet index-based fetch
+    g_points = load_gripper_track(Path(args.gripper_json))
+
     # frames
-    frames = collect_frames(args)
+    if args.parquet:
+        indices = [p.global_frame_idx for p in g_points]
+        if all(idx is not None for idx in indices):
+            frames = load_frames_from_parquet_by_indices(
+                args.parquet, image_column=args.parquet_image_column, global_indices=[int(i) for i in indices]  # type: ignore
+            )
+        else:
+            frames = collect_frames(args)
+    else:
+        frames = collect_frames(args)
+
     T = len(frames)
     if T < 3:
         raise ValueError("Need at least 3 frames for tracking and contact detection")
 
-    # gripper track
-    g_points = load_gripper_track(Path(args.gripper_json))
-    if len(g_points) < T:
-        # pad/restrict
+    if len(g_points) != T:
         T_effective = min(T, len(g_points))
         frames = frames[:T_effective]
         g_points = g_points[:T_effective]
@@ -678,4 +742,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
