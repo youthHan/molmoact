@@ -41,6 +41,7 @@ import math
 import os
 import glob as _glob
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -150,52 +151,112 @@ def load_frames_from_parquet(
     return frames
 
 
+def compute_shard_offsets(parquet_files: List[Path]) -> List[Tuple[Path, int, int]]:
+    offsets: List[Tuple[Path, int, int]] = []
+    total = 0
+    for path in parquet_files:
+        pf = pq.ParquetFile(path)
+        rows = pf.metadata.num_rows if pf.metadata is not None else 0
+        offsets.append((path, total, total + rows - 1))
+        total += rows
+    return offsets
+
+
+def to_rgb_array(value) -> np.ndarray:
+    if isinstance(value, Image.Image):
+        return np.array(value.convert("RGB"), dtype=np.uint8)
+    if isinstance(value, (bytes, bytearray)):
+        with Image.open(BytesIO(value)) as img:
+            return np.array(img.convert("RGB"), dtype=np.uint8)
+    if isinstance(value, memoryview):
+        with Image.open(BytesIO(value.tobytes())) as img:
+            return np.array(img.convert("RGB"), dtype=np.uint8)
+    if isinstance(value, np.ndarray):
+        arr = value
+        if arr.dtype in (np.float32, np.float64):
+            arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
+        else:
+            arr = arr.astype(np.uint8)
+        if arr.ndim == 2:
+            arr = np.stack([arr] * 3, axis=-1)
+        return arr
+    if isinstance(value, dict):
+        if value.get("path"):
+            with Image.open(value["path"]) as img:
+                return np.array(img.convert("RGB"), dtype=np.uint8)
+        if value.get("bytes") is not None:
+            with Image.open(BytesIO(value["bytes"])) as img:
+                return np.array(img.convert("RGB"), dtype=np.uint8)
+    raise ValueError(f"Unsupported image container from parquet: {type(value)!r}")
+
+
+def _iter_parquet_range(
+    pf: "pq.ParquetFile",
+    column: str,
+    start: int,
+    end: int,
+) -> Iterable[Tuple[int, np.ndarray]]:
+    current = 0
+    for rg_idx in range(pf.metadata.num_row_groups if pf.metadata is not None else 1):
+        table = pf.read_row_group(rg_idx, columns=[column])
+        rows = table.to_pylist()
+        for row in rows:
+            if current > end:
+                return
+            if current < start:
+                current += 1
+                continue
+            value = row.get(column) if isinstance(row, dict) else row
+            yield current, to_rgb_array(value)
+            current += 1
+
+
 def load_frames_from_parquet_by_indices(
     parquet_tokens: Sequence[str],
     image_column: str,
     global_indices: Sequence[int],
 ) -> List[Image.Image]:
-    """Load frames from sharded parquet using absolute global row indices.
-
-    The output order matches the order of indices in `global_indices`.
-    """
     if pq is None:
         raise RuntimeError("pyarrow is required for --parquet inputs")
     files = expand_parquet_tokens(parquet_tokens)
     if not files:
         raise FileNotFoundError("No parquet files located for --parquet inputs")
 
-    positions: Dict[int, List[int]] = {}
-    for pos, gi in enumerate(global_indices):
-        positions.setdefault(int(gi), []).append(pos)
-    total_needed = len(global_indices)
-    results: List[Optional[Image.Image]] = [None] * total_needed
+    indices = [int(idx) for idx in global_indices]
+    if not indices:
+        return []
 
-    found = 0
-    global_idx = 0
-    for path in files:
+    pos_map: Dict[int, List[int]] = {}
+    for pos, idx in enumerate(indices):
+        pos_map.setdefault(idx, []).append(pos)
+
+    unique_sorted = sorted(set(indices))
+    offsets = compute_shard_offsets(files)
+    results: List[Optional[Image.Image]] = [None] * len(indices)
+
+    for path, start, end in offsets:
+        needed = [idx for idx in unique_sorted if start <= idx <= end]
+        if not needed:
+            continue
+        local_min = needed[0] - start
+        local_max = needed[-1] - start
         pf = pq.ParquetFile(path)
-        meta = pf.metadata
-        num_groups = meta.num_row_groups if meta is not None else 1
-        for rg in range(num_groups):
-            table = pf.read_row_group(rg, columns=[image_column])
-            rows = table.to_pylist()
-            for row in rows:
-                if global_idx in positions:
-                    value = row.get(image_column) if isinstance(row, dict) else row
-                    img = _to_pil_from_any(value).convert("RGB")
-                    for pos in positions[global_idx]:
-                        results[pos] = img.copy()
-                        found += 1
-                    img.close()
-                global_idx += 1
+        for local_idx, array in _iter_parquet_range(pf, image_column, local_min, local_max):
+            global_idx = start + local_idx
+            slots = pos_map.get(global_idx)
+            if not slots:
+                continue
+            img = Image.fromarray(array)
+            for pos in slots:
+                results[pos] = img.copy()
+            img.close()
 
     missing = [i for i, im in enumerate(results) if im is None]
     if missing:
         raise RuntimeError(
             f"Failed to fetch {len(missing)} frames by global indices. Example missing positions: {missing[:10]}"
         )
-    return [im for im in results if im is not None]
+    return [img for img in results if img is not None]
 
 
 def collect_frames(args: argparse.Namespace) -> List[Image.Image]:
