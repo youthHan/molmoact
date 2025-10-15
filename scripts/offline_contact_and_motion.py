@@ -47,6 +47,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw
+from MolmoAct.gripper_tracking import DINOGripperTracker
 
 
 # -----------------------------
@@ -342,7 +343,7 @@ def derive_velocity_and_jerk(gripper: Sequence[GripperPoint]) -> Tuple[np.ndarra
 # -----------------------------
 
 
-def try_cotracker_predictor(checkpoint: Optional[str], window_len: int = 60):
+def try_cotracker_predictor(checkpoint: Optional[str], window_len: int = 60, vis_thr: float = 0.9):
     if checkpoint is None:
         return None
     try:
@@ -351,7 +352,7 @@ def try_cotracker_predictor(checkpoint: Optional[str], window_len: int = 60):
         if not Path(checkpoint).exists():
             print(f"[WARN] CoTracker checkpoint not found: {checkpoint}; falling back to LK")
             return None
-        model = CoTrackerPredictor(checkpoint=checkpoint, offline=True, window_len=window_len)
+        model = CoTrackerPredictor(checkpoint=checkpoint, offline=True, window_len=window_len, vis_thr=vis_thr)
         return model
     except Exception as e:  # pragma: no cover
         print(f"[WARN] Failed to initialize CoTracker: {e}; falling back to LK")
@@ -373,8 +374,10 @@ def run_cotracker(
     checkpoint: str,
     query_frame: int = 0,
     backward: bool = False,
+    vis_thr: float = 0.9,
+    segm_mask: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    model = try_cotracker_predictor(checkpoint)
+    model = try_cotracker_predictor(checkpoint, vis_thr=vis_thr)
     if model is None:
         return run_lk_grid(frames, grid_size)
     import torch
@@ -382,7 +385,22 @@ def run_cotracker(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     video = frames_to_tensor(frames).to(device)
-    tracks, vis = model(video, queries=None, segm_mask=None, grid_size=grid_size, grid_query_frame=query_frame, backward_tracking=backward)
+    mask_t = None
+    if segm_mask is not None:
+        m = segm_mask.astype(np.float32)
+        if m.ndim == 2:
+            m = m[None, None, ...]
+        elif m.ndim == 3:
+            m = m[None, ...]
+        mask_t = torch.from_numpy(m).to(device)
+    tracks, vis = model(
+        video,
+        queries=None,
+        segm_mask=mask_t,
+        grid_size=grid_size,
+        grid_query_frame=query_frame,
+        backward_tracking=backward,
+    )
     # shapes: tracks [B,T,N,2], vis [B,T,N]
     tracks_np = tracks[0].detach().cpu().numpy()
     vis_np = vis[0].detach().cpu().numpy().astype(bool)
@@ -448,6 +466,7 @@ def detect_contact_frames(
     min_gap: int = 8,
     jerk_z: float = 2.5,
     local_speed_z: float = 2.0,
+    local_speed_level_z: Optional[float] = None,
 ) -> List[int]:
     T, N, _ = tracks_xy.shape
     # distance to nearest track point
@@ -467,6 +486,7 @@ def detect_contact_frames(
 
     jerk_zs = robust_zscore(gripper_jerk)
     local_zs = robust_zscore(np.gradient(local_speed_sum))
+    level_zs = robust_zscore(local_speed_sum)
 
     score = np.maximum(0.0, jerk_zs) + 0.7 * np.maximum(0.0, local_zs)
 
@@ -476,7 +496,10 @@ def detect_contact_frames(
     for t in range(1, T - 1):
         if t - last < min_gap:
             continue
-        if jerk_zs[t] >= jerk_z and local_zs[t] >= local_speed_z:
+        local_ok = local_zs[t] >= local_speed_z
+        if not local_ok and local_speed_level_z is not None:
+            local_ok = level_zs[t] >= local_speed_level_z
+        if jerk_zs[t] >= jerk_z and local_ok:
             if score[t] >= score[t - 1] and score[t] >= score[t + 1]:
                 candidates.append(t)
                 last = t
@@ -567,6 +590,7 @@ def simple_motion_clusters(
     tracks_xy: np.ndarray,  # [T,N,2]
     vis: np.ndarray,  # [T,N]
     start_t: int,
+    window_frames: Optional[int] = None,
     min_disp: float = 5.0,
     angle_thr_deg: float = 30.0,
     mag_rel_thr: float = 0.5,
@@ -578,7 +602,7 @@ def simple_motion_clusters(
     for near-static background (|disp| < min_disp).
     """
     T, N, _ = tracks_xy.shape
-    end_t = T - 1
+    end_t = T - 1 if window_frames is None else min(T - 1, start_t + max(1, int(window_frames)))
     disp = tracks_xy[end_t] - tracks_xy[start_t]
     vis_ok = vis[start_t] & vis[end_t]
     mags = np.linalg.norm(disp, axis=-1)
@@ -626,6 +650,137 @@ def simple_motion_clusters(
         clusters[cid] = group
         cid += 1
     return clusters
+
+
+def prepost_and_exclusion_candidates(
+    g_xy: np.ndarray,  # [T,2]
+    tracks_xy: np.ndarray,  # [T,N,2]
+    vis: np.ndarray,  # [T,N]
+    contact_t: int,
+    pre_frames: int = 12,
+    post_frames: int = 12,
+    dpre_min: float = 32.0,
+    dpost_max: float = 20.0,
+    onset_lag: int = 2,
+    speed_ratio_min: float = 0.7,
+    speed_ratio_max: float = 1.3,
+    dir_cos_min: float = 0.9,
+    excl_radius: float = 22.0,
+    excl_percent: float = 0.75,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (candidate_mask[N], gripper_mask[N]) selecting likely object points.
+
+    - candidate: far from gripper before contact, close after, onset near contact,
+      and moving with similar speed and direction to gripper post-contact.
+    - gripper: points that stay too close to the gripper for most of post window.
+    """
+    T, N, _ = tracks_xy.shape
+    pre_s = max(0, contact_t - pre_frames)
+    pre_e = max(0, contact_t - 1)
+    post_s = contact_t
+    post_e = min(T - 1, contact_t + post_frames)
+    if pre_e <= pre_s or post_e <= post_s:
+        return np.zeros(N, dtype=bool), np.zeros(N, dtype=bool)
+
+    # distances to gripper
+    d = np.linalg.norm(tracks_xy - g_xy[:, None, :], axis=-1)  # T,N
+    d_pre = np.median(d[pre_s:pre_e + 1], axis=0)
+    d_post = np.median(d[post_s:post_e + 1], axis=0)
+
+    # exclusion: near gripper most of post window
+    near = (d[post_s:post_e + 1] <= excl_radius) & vis[post_s:post_e + 1]
+    near_ratio = near.mean(axis=0)
+    gripper_mask = near_ratio >= excl_percent
+
+    # onset near contact: speed rise
+    vx = np.gradient(tracks_xy[..., 0], axis=0)
+    vy = np.gradient(tracks_xy[..., 1], axis=0)
+    speed_i = np.linalg.norm(np.stack([vx, vy], axis=-1), axis=-1)  # T,N
+    g_vx = np.gradient(g_xy[:, 0])
+    g_vy = np.gradient(g_xy[:, 1])
+    g_speed = np.hypot(g_vx, g_vy)  # T
+    # choose peak onset within lag frames after contact
+    onset_ok = np.zeros(N, dtype=bool)
+    if onset_lag >= 0:
+        s_pre = np.median(speed_i[max(0, contact_t - 3):contact_t], axis=0)
+        s_post = np.median(speed_i[contact_t:min(T - 1, contact_t + onset_lag) + 1], axis=0)
+        onset_ok = s_post > s_pre
+
+    # speed/direction similarity post-contact
+    # compute medians over post window
+    gv_post = np.stack([np.median(g_vx[post_s:post_e + 1]), np.median(g_vy[post_s:post_e + 1])])
+    gmag = np.linalg.norm(gv_post) + 1e-6
+    dir_ok = np.zeros(N, dtype=bool)
+    spd_ok = np.zeros(N, dtype=bool)
+    if gmag > 1e-5:
+        ivx = np.median(vx[post_s:post_e + 1], axis=0)
+        ivy = np.median(vy[post_s:post_e + 1], axis=0)
+        imags = np.hypot(ivx, ivy) + 1e-6
+        # cosine similarity with gripper median velocity
+        cos = (ivx * gv_post[0] + ivy * gv_post[1]) / (imags * gmag)
+        dir_ok = cos >= dir_cos_min
+        # speed ratio band
+        ratio = imags / gmag
+        spd_ok = (ratio >= speed_ratio_min) & (ratio <= speed_ratio_max)
+
+    candidate = (d_pre >= dpre_min) & (d_post <= dpost_max) & onset_ok & dir_ok & spd_ok & (~gripper_mask)
+    candidate = candidate & np.any(vis[post_s:post_e + 1], axis=0)
+    return candidate, gripper_mask
+
+
+def dino_gripper_gating(
+    frames: Sequence[Image.Image],
+    g_xy: np.ndarray,  # [T,2]
+    contact_t: int,
+    points_xy: np.ndarray,  # [T,N,2]
+    vis: np.ndarray,  # [T,N]
+    model_id: str,
+    sim_thr: float = 0.88,
+    pre_frames: int = 2,
+    post_frames: int = 8,
+) -> np.ndarray:
+    """Return mask[N] of points that are NOT too similar to gripper appearance.
+
+    Computes a gripper patch embedding at a reference frame (contact-1 if possible)
+    and compares nearest-patch embeddings for points within a small time window.
+    """
+    tracker = DINOGripperTracker(model_id=model_id)
+    t_ref = max(0, contact_t - 1)
+    # Encode reference frame and pick nearest patch to gripper coord
+    ref_grid = tracker._encode_image(frames[t_ref])
+    gx, gy = g_xy[t_ref]
+    dx = ref_grid.xs - gx
+    dy = ref_grid.ys - gy
+    dist = np.hypot(dx, dy)
+    ref_idx = int(np.argmin(dist))
+    g_embed = ref_grid.normalized[ref_idx]
+
+    # Time window frames to encode
+    t0 = max(0, contact_t - pre_frames)
+    t1 = min(len(frames) - 1, contact_t + post_frames)
+
+    # Pre-encode grids for window
+    grids = [tracker._encode_image(frames[t]) for t in range(t0, t1 + 1)]
+
+    N = points_xy.shape[1]
+    keep = np.ones(N, dtype=bool)
+    # For each point, compute max similarity over the window
+    for j in range(N):
+        max_sim = -1.0
+        for ti, t in enumerate(range(t0, t1 + 1)):
+            if not vis[t, j]:
+                continue
+            grid = grids[ti]
+            x, y = points_xy[t, j]
+            dx = grid.xs - x
+            dy = grid.ys - y
+            idx = int(np.argmin(np.hypot(dx, dy)))
+            sim = float(grid.normalized[idx] @ g_embed)
+            if sim > max_sim:
+                max_sim = sim
+        if max_sim >= sim_thr:
+            keep[j] = False
+    return keep
 
 
 def draw_cluster_masks(
@@ -693,15 +848,45 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gripper-json", required=True, help="Trajectory JSON from track_gripper_trajectory.py")
 
     p.add_argument("--cotracker-checkpoint", default=None, help="Path to CoTracker checkpoint .pth")
-    p.add_argument("--grid-size", type=int, default=20, help="Grid size for CoTracker/LK (N x N points)")
+    p.add_argument("--grid-size", type=int, default=40, help="Grid size for CoTracker/LK (N x N points)")
+    p.add_argument("--cotracker-vis-thr", type=float, default=0.9, help="Visibility threshold for CoTracker points")
+    p.add_argument("--cotracker-backward", action="store_true", help="Enable backward tracking to bridge occlusions")
+    p.add_argument("--roi-densify", action="store_true", help="Restrict initial grid to ROI around gripper path")
+    p.add_argument("--roi-radius", type=float, default=18.0, help="ROI densification radius around gripper path (px)")
 
     p.add_argument("--local-radius", type=float, default=32.0, help="Radius around gripper for contact detection")
     p.add_argument("--min-gap", type=int, default=8, help="Min frames between contact events")
     p.add_argument("--jerk-z", type=float, default=2.5)
     p.add_argument("--local-speed-z", type=float, default=2.0)
+    p.add_argument("--local-speed-level-z", type=float, default=None, help="Optional z-threshold on local speed level (not just derivative)")
 
     p.add_argument("--output-dir", required=True, help="Directory to store outputs")
     p.add_argument("--write-overlays", action="store_true", help="Write cluster overlays per frame")
+    p.add_argument("--debug-overlays", action="store_true", help="Write detailed debug overlays for contacts and gating")
+
+    # Clustering and gating
+    p.add_argument("--cluster-window", type=int, default=15, help="Frames after contact for displacement window")
+    p.add_argument("--min-disp", type=float, default=5.0)
+    p.add_argument("--angle-thr-deg", type=float, default=20.0)
+    p.add_argument("--mag-rel-thr", type=float, default=0.8)
+    p.add_argument("--spatial-radius", type=float, default=40.0)
+
+    p.add_argument("--exclude-near-gripper-radius", type=float, default=22.0)
+    p.add_argument("--exclude-near-gripper-percent", type=float, default=0.75)
+    p.add_argument("--pre-frames", type=int, default=12)
+    p.add_argument("--post-frames", type=int, default=12)
+    p.add_argument("--dpre-min", type=float, default=32.0)
+    p.add_argument("--dpost-max", type=float, default=20.0)
+    p.add_argument("--onset-lag", type=int, default=2)
+    p.add_argument("--speed-ratio-min", type=float, default=0.7)
+    p.add_argument("--speed-ratio-max", type=float, default=1.3)
+    p.add_argument("--dir-cos-min", type=float, default=0.9)
+
+    p.add_argument("--dino-gating", action="store_true")
+    p.add_argument("--dino-model-id", default="facebook/dinov3-vits16-pretrain-lvd1689m")
+    p.add_argument("--dino-sim-gripper-thr", type=float, default=0.88)
+    p.add_argument("--dino-pre-frames", type=int, default=2)
+    p.add_argument("--dino-post-frames", type=int, default=8)
     return p.parse_args()
 
 
@@ -738,8 +923,27 @@ def main() -> None:
     g_xy = np.stack([[p.x, p.y] for p in g_points], axis=0)
     speed, jerk, vel = derive_velocity_and_jerk(g_points)
 
+    # Optional ROI densification mask built from gripper path
+    roi_mask: Optional[np.ndarray] = None
+    if args.roi_densify:
+        H, W = frames[0].size[1], frames[0].size[0]
+        roi_mask = np.zeros((H, W), dtype=np.uint8)
+        r = int(max(1, round(args.roi_radius)))
+        yy, xx = np.ogrid[:H, :W]
+        for (x, y) in g_xy.astype(int):
+            # draw a filled disk
+            mask = (xx - int(x)) ** 2 + (yy - int(y)) ** 2 <= r * r
+            roi_mask[mask] = 1
+
     # tracks
-    tracks_xy, vis = run_cotracker(frames, args.grid_size, args.cotracker_checkpoint)
+    tracks_xy, vis = run_cotracker(
+        frames,
+        args.grid_size,
+        args.cotracker_checkpoint,
+        backward=args.cotracker_backward,
+        vis_thr=args.cotracker_vis_thr,
+        segm_mask=roi_mask,
+    )
     if tracks_xy.shape[0] != T:
         T_eff = min(T, tracks_xy.shape[0])
         frames = frames[:T_eff]
@@ -754,8 +958,34 @@ def main() -> None:
 
     # detect contacts
     contacts = detect_contact_frames(
-        g_xy, speed, jerk, tracks_xy, vis, local_radius=args.local_radius, min_gap=args.min_gap, jerk_z=args.jerk_z, local_speed_z=args.local_speed_z
+        g_xy,
+        speed,
+        jerk,
+        tracks_xy,
+        vis,
+        local_radius=args.local_radius,
+        min_gap=args.min_gap,
+        jerk_z=args.jerk_z,
+        local_speed_z=args.local_speed_z,
+        local_speed_level_z=args.local_speed_level_z,
     )
+
+    # Debug overlays: ROI mask visualization
+    if args.debug_overlays and roi_mask is not None:
+        dbg_dir = out_dir / "debug_overlays"
+        dbg_dir.mkdir(exist_ok=True)
+        img = frames[0].copy().convert("RGBA")
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ov = ImageDraw.Draw(overlay)
+        # paint ROI as translucent green
+        H, W = roi_mask.shape
+        # draw squares for efficiency
+        for y in range(0, H, 2):
+            x_idxs = np.where(roi_mask[y] > 0)[0]
+            for x in x_idxs:
+                overlay.putpixel((int(x), int(y)), (0, 255, 100, 90))
+        img.alpha_composite(overlay)
+        img.convert("RGB").save(dbg_dir / "roi_mask_frame0.png")
 
     # estimate gripper forward edge at each contact
     edges: List[Tuple[int, float, float]] = []
@@ -763,9 +993,122 @@ def main() -> None:
         ex, ey = estimate_gripper_edge(frames, g_xy, vel, t)
         edges.append((t, ex, ey))
 
+    # Debug overlays for contact signals
+    if args.debug_overlays:
+        dbg_dir = out_dir / "debug_overlays"
+        dbg_dir.mkdir(exist_ok=True)
+        # recompute local signal series for annotation
+        diffs = tracks_xy - g_xy[:, None, :]
+        dists = np.linalg.norm(diffs, axis=-1)
+        local_mask_all = (dists <= args.local_radius) & vis
+        vx = np.gradient(tracks_xy[..., 0], axis=0)
+        vy = np.gradient(tracks_xy[..., 1], axis=0)
+        local_speed_all = np.linalg.norm(np.stack([vx, vy], axis=-1), axis=-1)
+        local_speed_sum = (local_speed_all * local_mask_all).sum(axis=1)
+        jerk_zs = robust_zscore(jerk)
+        local_zs = robust_zscore(np.gradient(local_speed_sum))
+        level_zs = robust_zscore(local_speed_sum)
+        for (t, ex, ey) in edges:
+            img = frames[t].copy()
+            draw = ImageDraw.Draw(img)
+            gx, gy = g_xy[t]
+            # draw local radius
+            r = args.local_radius
+            draw.ellipse((gx - r, gy - r, gx + r, gy + r), outline=(0, 200, 255), width=2)
+            # draw points in local mask
+            idxs = np.where(local_mask_all[t])[0]
+            for j in idxs:
+                x, y = tracks_xy[t, j]
+                draw.ellipse((x - 1, y - 1, x + 1, y + 1), fill=(255, 220, 0))
+            # gripper and edge
+            draw.ellipse((gx - 5, gy - 5, gx + 5, gy + 5), outline=(255, 50, 50), width=2)
+            draw.ellipse((ex - 4, ey - 4, ex + 4, ey + 4), outline=(50, 220, 255), width=2)
+            # annotate values
+            txt = f"t={t} jerk_z={jerk_zs[t]:.2f} local_dz={local_zs[t]:.2f} level_z={level_zs[t]:.2f}"
+            draw.text((10, 10), txt, fill=(255, 255, 255))
+            img.save(dbg_dir / f"contact_debug_t{t:05d}.png")
+
     # cluster motions after first contact (or from 0 if none)
     start_t = contacts[0] if contacts else 0
-    clusters = simple_motion_clusters(tracks_xy, vis, start_t=start_t)
+
+    # Pre/Post and exclusion candidates
+    cand_mask, grip_mask = prepost_and_exclusion_candidates(
+        g_xy,
+        tracks_xy,
+        vis,
+        contact_t=start_t,
+        pre_frames=args.pre_frames,
+        post_frames=args.post_frames,
+        dpre_min=args.dpre_min,
+        dpost_max=args.dpost_max,
+        onset_lag=args.onset_lag,
+        speed_ratio_min=args.speed_ratio_min,
+        speed_ratio_max=args.speed_ratio_max,
+        dir_cos_min=args.dir_cos_min,
+        excl_radius=args.exclude_near_gripper_radius,
+        excl_percent=args.exclude_near_gripper_percent,
+    )
+
+    # Optional DINO gating to remove gripper-appearance points
+    if args.dino_gating:
+        keep_mask = dino_gripper_gating(
+            frames,
+            g_xy,
+            contact_t=start_t,
+            points_xy=tracks_xy,
+            vis=vis,
+            model_id=args.dino_model_id,
+            sim_thr=args.dino_sim_gripper_thr,
+            pre_frames=args.dino_pre_frames,
+            post_frames=args.dino_post_frames,
+        )
+        cand_mask = cand_mask & keep_mask
+
+    # Build clusters, then filter members by candidate mask
+    clusters = simple_motion_clusters(
+        tracks_xy,
+        vis,
+        start_t=start_t,
+        window_frames=args.cluster_window,
+        min_disp=args.min_disp,
+        angle_thr_deg=args.angle_thr_deg,
+        mag_rel_thr=args.mag_rel_thr,
+        spatial_radius=args.spatial_radius,
+    )
+    # Apply candidate filtering: keep only candidate points in non-zero clusters
+    filtered: Dict[int, List[int]] = {}
+    new_cid = 1
+    static = []
+    for cid, idxs in clusters.items():
+        if cid == 0:
+            static = idxs
+            continue
+        kept = [j for j in idxs if cand_mask[j]]
+        if kept:
+            filtered[new_cid] = kept
+            new_cid += 1
+    # Background cluster: original static plus non-candidate members
+    non_cand = [j for j in range(tracks_xy.shape[1]) if not cand_mask[j]]
+    filtered[0] = sorted(set(static + non_cand))
+    clusters = filtered
+
+    # Debug overlay: gating result at start_t
+    if args.debug_overlays:
+        dbg_dir = out_dir / "debug_overlays"
+        img = frames[start_t].copy()
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        # red: gripper excluded
+        for j in np.where(grip_mask)[0]:
+            x, y = tracks_xy[start_t, j]
+            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(255, 60, 60, 220))
+        # green: candidates kept
+        for j in np.where(cand_mask & (~grip_mask))[0]:
+            x, y = tracks_xy[start_t, j]
+            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(60, 220, 100, 220))
+        img = img.convert("RGBA")
+        img.alpha_composite(overlay)
+        img.convert("RGB").save(dbg_dir / f"gating_start_t{start_t:05d}.png")
 
     # draw masks and overlays
     masks_dir = out_dir / "masks"
@@ -782,6 +1125,21 @@ def main() -> None:
             "local_radius": args.local_radius,
             "jerk_z": args.jerk_z,
             "local_speed_z": args.local_speed_z,
+            "cluster_window": args.cluster_window,
+            "min_disp": args.min_disp,
+            "angle_thr_deg": args.angle_thr_deg,
+            "mag_rel_thr": args.mag_rel_thr,
+            "spatial_radius": args.spatial_radius,
+            "exclude_near_gripper_radius": args.exclude_near_gripper_radius,
+            "exclude_near_gripper_percent": args.exclude_near_gripper_percent,
+            "dpre_min": args.dpre_min,
+            "dpost_max": args.dpost_max,
+            "onset_lag": args.onset_lag,
+            "speed_ratio_min": args.speed_ratio_min,
+            "speed_ratio_max": args.speed_ratio_max,
+            "dir_cos_min": args.dir_cos_min,
+            "dino_gating": args.dino_gating,
+            "dino_sim_gripper_thr": args.dino_sim_gripper_thr if args.dino_gating else None,
         },
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
