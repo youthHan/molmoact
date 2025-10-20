@@ -863,7 +863,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", required=True, help="Directory to store outputs")
     p.add_argument("--write-overlays", action="store_true", help="Write cluster overlays per frame")
     p.add_argument("--debug-overlays", action="store_true", help="Write detailed debug overlays for contacts and gating")
-
+    p.add_argument("--disable-candidate-gating", action="store_true", help="Bypass pre/post + exclusion gating and keep clustered points")
+    p.add_argument("--baseline-v0", action="store_true", help="Use safe baseline defaults and disable gating")
+    p.add_argument("--fallback-start", default="auto", choices=["auto", "max-local-deriv", "max-local-level", "max-jerk", "mid"], help="Start frame when no contact is found")
+    p.add_argument("--tag", default=None, help="Optional run tag stored in summary.json")
+    
     # Clustering and gating
     p.add_argument("--cluster-window", type=int, default=15, help="Frames after contact for displacement window")
     p.add_argument("--min-disp", type=float, default=5.0)
@@ -894,6 +898,22 @@ def main() -> None:
     args = parse_args()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Apply baseline v0 preset if requested (safe defaults)
+    if args.baseline_v0:
+        args.cotracker_backward = True
+        args.cotracker_vis_thr = 0.8 if args.cotracker_vis_thr is None or args.cotracker_vis_thr > 0.8 else args.cotracker_vis_thr
+        args.roi_densify = False
+        args.dino_gating = False
+        args.local_radius = max(args.local_radius, 48.0)
+        args.jerk_z = min(args.jerk_z, 2.2)
+        args.local_speed_z = min(args.local_speed_z, 2.2)
+        args.local_speed_level_z = 2.0 if args.local_speed_level_z is None else args.local_speed_level_z
+        args.cluster_window = 15
+        args.angle_thr_deg = 20.0
+        args.mag_rel_thr = 0.8
+        args.spatial_radius = 36.0
+        args.disable_candidate_gating = True
 
     # Load gripper first to support parquet index-based fetch
     g_points = load_gripper_track(Path(args.gripper_json))
@@ -1028,41 +1048,70 @@ def main() -> None:
             draw.text((10, 10), txt, fill=(255, 255, 255))
             img.save(dbg_dir / f"contact_debug_t{t:05d}.png")
 
-    # cluster motions after first contact (or from 0 if none)
-    start_t = contacts[0] if contacts else 0
+    # cluster motions after first contact (or from fallback if none)
+    if contacts:
+        start_t = contacts[0]
+    else:
+        # Fallback start_t selection based on configured strategy
+        diffs_fb = tracks_xy - g_xy[:, None, :]
+        dists_fb = np.linalg.norm(diffs_fb, axis=-1)
+        local_mask_fb = (dists_fb <= args.local_radius) & vis
+        vx_fb = np.gradient(tracks_xy[..., 0], axis=0)
+        vy_fb = np.gradient(tracks_xy[..., 1], axis=0)
+        local_speed_fb = np.linalg.norm(np.stack([vx_fb, vy_fb], axis=-1), axis=-1)
+        local_speed_sum_fb = (local_speed_fb * local_mask_fb).sum(axis=1)
+        z_local_deriv = robust_zscore(np.gradient(local_speed_sum_fb))
+        z_local_level = robust_zscore(local_speed_sum_fb)
+        z_jerk = robust_zscore(jerk)
+        if args.fallback_start == "max-local-deriv":
+            start_t = int(np.argmax(z_local_deriv))
+        elif args.fallback_start == "max-local-level":
+            start_t = int(np.argmax(z_local_level))
+        elif args.fallback_start == "max-jerk":
+            start_t = int(np.argmax(z_jerk))
+        elif args.fallback_start == "mid":
+            start_t = int(len(frames) // 2)
+        else:  # auto blend
+            score_fb = z_local_deriv + 0.5 * z_local_level + 0.5 * z_jerk
+            start_t = int(np.argmax(score_fb))
+        # In fallback, default to disabling candidate gating to avoid wiping output
+        if not args.disable_candidate_gating:
+            args.disable_candidate_gating = True
 
-    # Pre/Post and exclusion candidates
-    cand_mask, grip_mask = prepost_and_exclusion_candidates(
-        g_xy,
-        tracks_xy,
-        vis,
-        contact_t=start_t,
-        pre_frames=args.pre_frames,
-        post_frames=args.post_frames,
-        dpre_min=args.dpre_min,
-        dpost_max=args.dpost_max,
-        onset_lag=args.onset_lag,
-        speed_ratio_min=args.speed_ratio_min,
-        speed_ratio_max=args.speed_ratio_max,
-        dir_cos_min=args.dir_cos_min,
-        excl_radius=args.exclude_near_gripper_radius,
-        excl_percent=args.exclude_near_gripper_percent,
-    )
-
-    # Optional DINO gating to remove gripper-appearance points
-    if args.dino_gating:
-        keep_mask = dino_gripper_gating(
-            frames,
+    # Pre/Post and exclusion candidates (enabled only when we have a contact and not disabled)
+    gating_enabled = (len(contacts) > 0) and (not args.disable_candidate_gating)
+    if gating_enabled:
+        cand_mask, grip_mask = prepost_and_exclusion_candidates(
             g_xy,
+            tracks_xy,
+            vis,
             contact_t=start_t,
-            points_xy=tracks_xy,
-            vis=vis,
-            model_id=args.dino_model_id,
-            sim_thr=args.dino_sim_gripper_thr,
-            pre_frames=args.dino_pre_frames,
-            post_frames=args.dino_post_frames,
+            pre_frames=args.pre_frames,
+            post_frames=args.post_frames,
+            dpre_min=args.dpre_min,
+            dpost_max=args.dpost_max,
+            onset_lag=args.onset_lag,
+            speed_ratio_min=args.speed_ratio_min,
+            speed_ratio_max=args.speed_ratio_max,
+            dir_cos_min=args.dir_cos_min,
+            excl_radius=args.exclude_near_gripper_radius,
+            excl_percent=args.exclude_near_gripper_percent,
         )
-        cand_mask = cand_mask & keep_mask
+
+        # Optional DINO gating to remove gripper-appearance points
+        if args.dino_gating:
+            keep_mask = dino_gripper_gating(
+                frames,
+                g_xy,
+                contact_t=start_t,
+                points_xy=tracks_xy,
+                vis=vis,
+                model_id=args.dino_model_id,
+                sim_thr=args.dino_sim_gripper_thr,
+                pre_frames=args.dino_pre_frames,
+                post_frames=args.dino_post_frames,
+            )
+            cand_mask = cand_mask & keep_mask
 
     # Build clusters, then filter members by candidate mask
     clusters = simple_motion_clusters(
@@ -1075,25 +1124,26 @@ def main() -> None:
         mag_rel_thr=args.mag_rel_thr,
         spatial_radius=args.spatial_radius,
     )
-    # Apply candidate filtering: keep only candidate points in non-zero clusters
-    filtered: Dict[int, List[int]] = {}
-    new_cid = 1
-    static = []
-    for cid, idxs in clusters.items():
-        if cid == 0:
-            static = idxs
-            continue
-        kept = [j for j in idxs if cand_mask[j]]
-        if kept:
-            filtered[new_cid] = kept
-            new_cid += 1
-    # Background cluster: original static plus non-candidate members
-    non_cand = [j for j in range(tracks_xy.shape[1]) if not cand_mask[j]]
-    filtered[0] = sorted(set(static + non_cand))
-    clusters = filtered
+    # Apply candidate filtering only if enabled; otherwise keep clusters as-is
+    if gating_enabled:
+        filtered: Dict[int, List[int]] = {}
+        new_cid = 1
+        static = []
+        for cid, idxs in clusters.items():
+            if cid == 0:
+                static = idxs
+                continue
+            kept = [j for j in idxs if cand_mask[j]]
+            if kept:
+                filtered[new_cid] = kept
+                new_cid += 1
+        # Background cluster: original static plus non-candidate members
+        non_cand = [j for j in range(tracks_xy.shape[1]) if not cand_mask[j]]
+        filtered[0] = sorted(set(static + non_cand))
+        clusters = filtered
 
     # Debug overlay: gating result at start_t
-    if args.debug_overlays:
+    if args.debug_overlays and gating_enabled:
         dbg_dir = out_dir / "debug_overlays"
         img = frames[start_t].copy()
         overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
@@ -1140,7 +1190,11 @@ def main() -> None:
             "dir_cos_min": args.dir_cos_min,
             "dino_gating": args.dino_gating,
             "dino_sim_gripper_thr": args.dino_sim_gripper_thr if args.dino_gating else None,
+            "baseline_v0": args.baseline_v0,
+            "disable_candidate_gating": args.disable_candidate_gating,
+            "fallback_start": None if contacts else args.fallback_start,
         },
+        "tag": args.tag,
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
