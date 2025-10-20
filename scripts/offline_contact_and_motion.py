@@ -846,6 +846,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-frames", type=int, default=None)
 
     p.add_argument("--gripper-json", required=True, help="Trajectory JSON from track_gripper_trajectory.py")
+    p.add_argument("--gripper-source-width", type=int, default=None, help="If gripper JSON was generated at a different width, rescale X")
+    p.add_argument("--gripper-source-height", type=int, default=None, help="If gripper JSON was generated at a different height, rescale Y")
 
     p.add_argument("--cotracker-checkpoint", default=None, help="Path to CoTracker checkpoint .pth")
     p.add_argument("--grid-size", type=int, default=40, help="Grid size for CoTracker/LK (N x N points)")
@@ -867,6 +869,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--baseline-v0", action="store_true", help="Use safe baseline defaults and disable gating")
     p.add_argument("--fallback-start", default="auto", choices=["auto", "max-local-deriv", "max-local-level", "max-jerk", "mid"], help="Start frame when no contact is found")
     p.add_argument("--tag", default=None, help="Optional run tag stored in summary.json")
+    p.add_argument("--dump-gripper-overlays", type=int, default=0, help="If >0, write first N frames with gripper point overlaid for sanity check")
     
     # Clustering and gating
     p.add_argument("--cluster-window", type=int, default=15, help="Frames after contact for displacement window")
@@ -940,8 +943,32 @@ def main() -> None:
         g_points = g_points[:T_effective]
         T = T_effective
 
+    # Optional: rescale gripper coordinates if the JSON was produced at a different resolution
+    frame_w, frame_h = frames[0].size
+    if args.gripper_source_width and args.gripper_source_height:
+        sx = frame_w / float(args.gripper_source_width)
+        sy = frame_h / float(args.gripper_source_height)
+        for pt in g_points:
+            pt.x *= sx
+            pt.y *= sy
+    elif (args.gripper_source_width and not args.gripper_source_height) or (args.gripper_source_height and not args.gripper_source_width):
+        print("[WARN] Provide both --gripper-source-width and --gripper-source-height to rescale; ignoring partial input")
+
     g_xy = np.stack([[p.x, p.y] for p in g_points], axis=0)
     speed, jerk, vel = derive_velocity_and_jerk(g_points)
+
+    # Optional: dump a few gripper overlays for sanity check
+    if args.dump_gripper_overlays > 0:
+        dbg_dir = out_dir / "debug_overlays"
+        dbg_dir.mkdir(exist_ok=True)
+        n_dump = min(int(args.dump_gripper_overlays), T)
+        for t in range(n_dump):
+            img = frames[t].copy()
+            draw = ImageDraw.Draw(img)
+            gx, gy = g_xy[t]
+            draw.ellipse((gx - 5, gy - 5, gx + 5, gy + 5), outline=(255, 50, 50), width=2)
+            draw.text((10, 10), f"t={t} (x={gx:.1f}, y={gy:.1f})", fill=(255, 255, 255))
+            img.save(dbg_dir / f"gripper_overlay_{t:05d}.png")
 
     # Optional ROI densification mask built from gripper path
     roi_mask: Optional[np.ndarray] = None
