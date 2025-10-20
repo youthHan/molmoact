@@ -19,10 +19,20 @@ SEG_RAW=${1:?"SEG_ID required (e.g., 12)"}
 PARQUET_GLOB=${2:?"Parquet glob required"}
 GRIPPER_DIR=${3:?"Directory containing segment_XXXX.json"}
 OUTPUT_ROOT=${4:?"Output root directory"}
-DO_RUN=${5:-}
+
+# Detect --run anywhere after fixed args
+DO_RUN=""
+for arg in "${@:5}"; do
+  if [[ "$arg" == "--run" ]]; then
+    DO_RUN="--run"
+    break
+  fi
+done
 
 SEG=$(printf "%04d" "${SEG_RAW}")
-GRIPPER_JSON="${GRIPPER_DIR}/segment_${SEG}.json"
+# Normalize paths (strip trailing slashes)
+GRIPPER_JSON="${GRIPPER_DIR%/}/segment_${SEG}.json"
+OUTPUT_ROOT="${OUTPUT_ROOT%/}"
 
 PY=python
 SCRIPT="MolmoAct/scripts/offline_contact_and_motion.py"
@@ -42,13 +52,24 @@ run_cmd() {
   local tag=$1; shift
   local outdir="${OUTPUT_ROOT}/seg${SEG}_${tag}"
   echo "# ${tag}"
-  echo "${PY} ${SCRIPT} \"${COMMON[@]}\" $* --output-dir \"${outdir}\" --tag ${tag}"
+  # Build command as an array for correctness
+  local cmd=("${PY}" "${SCRIPT}" "${COMMON[@]}" "$@" --output-dir "${outdir}" --tag "${tag}")
+  # Pretty-print with shell-escaped tokens
+  local line=""
+  for tok in "${cmd[@]}"; do
+    printf -v esc '%q' "$tok"
+    line+="$esc "
+  done
+  echo "$line"
   if [[ "${DO_RUN}" == "--run" ]]; then
-    ${PY} ${SCRIPT} "${COMMON[@]}" "$@" --output-dir "${outdir}" --tag "${tag}"
+    "${cmd[@]}"
   fi
 }
 
 echo "[INFO] Using gripper JSON: ${GRIPPER_JSON}"
+if [[ ! -f "${GRIPPER_JSON}" ]]; then
+  echo "[WARN] Gripper JSON not found: ${GRIPPER_JSON}" 1>&2
+fi
 
 # 0) Baseline v0 (safe defaults, no gating)
 run_cmd baseline_v0 --baseline-v0 --disable-candidate-gating
@@ -90,4 +111,3 @@ run_cmd gate_strong_dino \
   --dino-gating --dino-sim-gripper-thr 0.90
 
 echo "[INFO] Commands prepared. Append --run to execute."
-
