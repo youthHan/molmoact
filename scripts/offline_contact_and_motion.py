@@ -47,7 +47,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw
-from MolmoAct.gripper_tracking import DINOGripperTracker
+
+os.sys.path.append("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct")
+from gripper_tracking import DINOGripperTracker
 
 
 # -----------------------------
