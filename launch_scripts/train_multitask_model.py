@@ -171,11 +171,13 @@ if __name__ == "__main__":
     parser.add_argument("--no-ft-vit", dest="ft_vit", action="store_false", help="Disable ft vit")
     parser.add_argument("--no-ft-llm", dest="ft_llm", action="store_false", help="Disable ft llm")
     parser.add_argument("--no-activation-checkpointing", dest="activation_checkpointing", action="store_false", help="Enable activation checkpointing")
+    parser.add_argument("--full-activation-checkpointing", dest="full_activation_checkpointing", action="store_true", help="Enable activation checkpointing")
     parser.set_defaults(fsdp2=True)
     parser.set_defaults(ft_connector=True)
     parser.set_defaults(ft_vit=True)
     parser.set_defaults(ft_llm=True)
     parser.set_defaults(activation_checkpointing=True)
+    parser.set_defaults(full_activation_checkpointing=False)
 
     args, other_args = parser.parse_known_args()
 
@@ -324,6 +326,13 @@ if __name__ == "__main__":
                 "libero_spatial",
             ], 1.0],
         ]
+    elif args.mixture in ["libero-spatial-dinov3"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_spatial_dinov3", [
+                "libero_spatial_dinov3",
+            ], 1.0],
+        ]
     elif args.mixture in ["libero-object"]:
         # this will be uniform sampling
         tasks = [
@@ -351,6 +360,64 @@ if __name__ == "__main__":
             ["libero_long_clean", [
                 "libero_long_clean",
             ], 1.0],
+        ]
+    elif args.mixture in ["libero-goal-clean"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_goal_clean", [
+                "libero_goall_clean",
+            ], 1.0],
+        ]
+    elif args.mixture in ["libero-goal-dinov3"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_goal_dinov3", [
+                "libero_goal_dinov3",
+            ], 1.0],
+        ]
+    elif args.mixture in ["libero-goal-deluxe"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_goal_deluxe", [
+                "libero_goal_deluxe",
+            ], 1.0],
+        ]
+    elif args.mixture in ["libero-object-deluxe"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_object_deluxe", [
+                "libero_object_deluxe",
+            ], 1.0],
+        ]
+    elif args.mixture in ["libero-long-dinov3"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_long_dinov3", [
+                "libero_long_dinov3",
+            ], 1.0],
+        ]
+    elif args.mixture in ["libero-10-deluxe"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_long_deluxe", [
+                "libero_long_deluxe",
+            ], 1.0],
+        ]
+    elif args.mixture in ["libero-all-v2-dinov3"]:
+        # this will be uniform sampling
+        tasks = [
+            ["libero_spatial_dinov3", [
+                "libero_spatial_dinov3",
+            ], 0.225],
+            ["libero_object_dinov3", [
+                "libero_object_dinov3",
+            ], 0.225],
+            ["libero_goal_dinov3", [
+                "libero_goal_dinov3",
+            ], 0.18],
+            ["libero_long_dinov3", [
+                "libero_long_dinov3",
+            ], 0.37],
         ]
     else:
         raise NotImplementedError(args.mixture)
@@ -434,7 +501,7 @@ if __name__ == "__main__":
         submixture = get_training_mixture(submixture)
         root_size_mixture.append(RootSizeMixture(rate, submixture))
 
-    num_workers = 0 # 16 # 1 #8
+    num_workers = 1 # 1 #8
     evaluations = []
     if not args.turn_off_inference:
         for task in eval_tasks:
@@ -558,7 +625,8 @@ if __name__ == "__main__":
         save_every_n_epoch=args.save_every_n_epoch,
         save_interval_epoch=0,
         evaluators=evaluations_loss,
-        activation_checkpointing=args.activation_checkpointing
+        activation_checkpointing=args.activation_checkpointing,
+        full_activation_checkpointing=args.full_activation_checkpointing
     )
 
     conf = OmegaConf.create(cfg)

@@ -206,6 +206,12 @@ class Molmo(ModelBase):
 
     def apply_activation_checkpointing(self):
         """Enable activation checkpointing"""
+        # self.transformer.apply_activation_checkpointing()
+        if self.vision_backbone is not None:
+            self.vision_backbone.apply_activation_checkpointing()
+
+    def apply_full_activation_checkpointing(self):
+        """Enable activation checkpointing"""
         self.transformer.apply_activation_checkpointing()
         if self.vision_backbone is not None:
             self.vision_backbone.apply_activation_checkpointing()

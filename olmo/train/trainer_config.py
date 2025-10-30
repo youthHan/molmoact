@@ -507,7 +507,12 @@ class TrainConfig(BaseConfig):
 
     activation_checkpointing: bool = True
     """
-    Enable activation checkpointing
+    Enable activation checkpointing (amended)
+    """
+
+    full_activation_checkpointing: bool = True
+    """
+    Enable full activation checkpointing
     """
 
     fsdp: FSDPConfig = field(default_factory=FSDPConfig)

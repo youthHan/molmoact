@@ -220,12 +220,28 @@ def get_dataset_by_name(dataset_name, split) -> Dataset:
         return MolmoActDatasetTabletopSecondary(split="train", style="demo", width=320, height=240)
 
     # libero post-training
+    if "libero_spatial_dinov3" in dataset_name:
+        return LIBEROSpatialDinov3(split="train", style="demo")
     if "libero_spatial" in dataset_name:
         return LIBEROSpatial(split="train", style="demo")
+    if "libero_object_deluxe" in dataset_name:
+        return LIBEROObjectDeluxe(split="train", style="demo")
+    if "libero_object_dinov3" in dataset_name:
+        return LIBEROObjectDinov3(split="train", style="demo")
     if "libero_object" in dataset_name:
         return LIBEROObject(split="train", style="demo")
+    if "libero_goal_dinov3" in dataset_name:
+        return LIBEROGoalDinov3(split="train", style="demo")
+    if "libero_goal_deluxe" in dataset_name:
+        return LIBEROGoalDeluxe(split="train", style="demo")
+    if "libero_goal_clean" in dataset_name:
+        return LIBEROGoalClean(split="train", style="demo")
     if "libero_goal" in dataset_name:
         return LIBEROGoal(split="train", style="demo")
+    if "libero_long_dinov3" in dataset_name:
+        return LIBEROLongDinov3(split="train", style="demo")
+    if "libero_long_deluxe" in dataset_name:
+        return LIBEROLongDeluxe(split="train", style="demo")
     if "libero_long_clean" in dataset_name:
         return LIBEROLongClean(split="train", style="demo")
     if "libero_long" in dataset_name:

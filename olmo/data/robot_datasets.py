@@ -177,6 +177,13 @@ class RobotHfDataset(HfDataset):
         ex = self.dataset[item]
         conv = ex["conversations"]
 
+        if isinstance(conv, dict):
+            pass
+        elif isinstance(conv, str):
+            conv = json.loads(conv)
+        else:
+            raise NotImplementedError(f'Not supported format of conversation in {str(type(conv))}')
+
         # Single camera -> return single PIL; Multi -> list of PIL
         image_out = self._extract_images(ex)
 
@@ -347,6 +354,62 @@ class RobotHfDatasetLIBEROLongClean(RobotHfDataset):
     @classmethod
     def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
         return _infer_cameras(dataset_name)
+    
+class RobotHfDatasetLIBEROGoalClean(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/DannyJun/libero_goal/"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
+
+class RobotHfDatasetLIBEROGoalDinov3(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/new_goal"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
+
+class RobotHfDatasetLIBEROGoalDeluxe(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_goal_deluxe"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
+
+class RobotHfDatasetLIBEROLongDinov3(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/new_10"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
+
+class RobotHfDatasetLIBEROSpatialDinov3(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/new_spatial"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
+
+class RobotHfDatasetLIBEROObjectDinov3(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/new_object"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
+
+class RobotHfDatasetLIBEROObjectDeluxe(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_object_deluxe"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
+        
+class RobotHfDatasetLIBEROLongDeluxe(RobotHfDataset):
+    PATH = "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_10_deluxe"
+
+    @classmethod
+    def default_camera_fields(cls, dataset_name: str) -> Tuple[str, ...]:
+        return _infer_cameras(dataset_name)
 
 def _prep_libero_config(dataset_name: str, split: str = "train"):
     RobotHfDatasetLIBERO.download(dataset_name=dataset_name)
@@ -491,6 +554,297 @@ class LIBEROLongClean(_LIBEROHfBase):
         # HF handles parallelism internally; n_procs unused here but kept for API parity
         builder.download_and_prepare()
 
+
+class LIBEROGoalClean(_LIBEROHfBase):
+    DATASET_NAME = "libero_goal_clean"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_goal.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROGoalClean.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROGoalClean(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Goal Clean: DannyJun/libero_10, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_goal", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
+
+class LIBEROGoalDinov3(_LIBEROHfBase):
+    DATASET_NAME = "libero_goal_dinov3"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_goal.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROGoalDinov3.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROGoalDinov3(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Goal Clean: DannyJun/libero_10, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_goal", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
+
+class LIBEROGoalDeluxe(_LIBEROHfBase):
+    DATASET_NAME = "libero_goal_deluxe"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_goal.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROGoalDeluxe.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROGoalDeluxe(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Goal Clean: DannyJun/libero_10, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_goal", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
+
+class LIBEROLongDinov3(_LIBEROHfBase):
+    DATASET_NAME = "libero_10_dinov3"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_10.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROLongDinov3.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROLongDinov3(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Long Clean: DannyJun/libero_10, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_goal", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
+
+class LIBEROSpatialDinov3(_LIBEROHfBase):
+    DATASET_NAME = "libero_spatial_dinov3"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_spatial.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROSpatialDinov3.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROSpatialDinov3(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Spatial Clean: DannyJun/libero_10, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_goal", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
+
+class LIBEROObjectDinov3(_LIBEROHfBase):
+    DATASET_NAME = "libero_object_dinov3"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_object.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROObjectDinov3.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROObjectDinov3(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Spatial Clean: DannyJun/libero_10, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_goal", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
+
+
+class LIBEROObjectDeluxe(_LIBEROHfBase):
+    DATASET_NAME = "libero_object_deluxe"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_object.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROObjectDeluxe.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROObjectDeluxe(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Spatial Clean: DannyJun/libero_10, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_goal", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
+
+class LIBEROLongDeluxe(_LIBEROHfBase):
+    DATASET_NAME = "libero_10_deluxe"
+    STATS_MAPPING = json.load(open("/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/suite_token_rewrites_10.json"))
+
+    def __init__(
+        self,
+        split: str = "train",
+        style: str = "demo",
+        keep_in_memory: bool = False,
+        num_proc: int = 16,
+        **hf_kwargs,
+    ):
+        assert self.DATASET_NAME, "Set DATASET_NAME on the subclass"
+        cams = RobotHfDatasetLIBEROLongDeluxe.default_camera_fields(self.DATASET_NAME)
+        self._inner = RobotHfDatasetLIBEROLongDeluxe(
+            dataset_name="default",
+            split=split,
+            camera_fields=cams,
+            style=style,
+            keep_in_memory=keep_in_memory,
+            num_proc=num_proc,
+            **hf_kwargs,
+        )
+
+    @classmethod
+    def download(cls, dataset_name: str, n_procs: Optional[int] = None):
+        """
+        Prefetch the HF dataset (builder) for this config to the local HF cache.
+        This mirrors HfDataset.download but passes the config name.
+        """
+        assert cls.PATH, "Subclass must define PATH"
+        print(f"Libero Long Clean: DannyJun/libero_10_deluxe, {dataset_name}")
+        builder = datasets.load_dataset_builder("DannyJun/libero_10", name=dataset_name)
+        # HF handles parallelism internally; n_procs unused here but kept for API parity
+        builder.download_and_prepare()
+
+
 __all__ = [
     # Pretraining wrappers
     "BC_Z", "BridgeDataV2", "RT_1", "AuxiliaryDepthData", "AuxiliaryTraceData",
@@ -499,5 +853,6 @@ __all__ = [
     "MolmoActDatasetTabletopPrimary", "MolmoActDatasetTabletopSecondary",
     # Libero wrappers
     "LIBEROSpatial", "LIBEROObject", "LIBEROGoal", "LIBEROLong",
-    "LIBEROLongClean",
+    "LIBEROLongClean", "LIBEROGoalClean", "LIBEROGoalDinov3", "LIBEROLongDeluxe",
+    "LIBEROSpatialDinov3", "LIBEROLongDinov3", "LIBEROObjectDinov3", "LIBEROGoalDeluxe", "LIBEROObjectDeluxe",
 ]

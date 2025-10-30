@@ -211,7 +211,10 @@ def run_trainer(cfg: TrainConfig) -> None:
 
     # Do some other model setup
     if cfg.activation_checkpointing:
-        olmo_model.apply_activation_checkpointing()
+        if cfg.full_activation_checkpointing:
+            olmo_model.apply_full_activation_checkpointing()
+        else:
+            olmo_model.apply_activation_checkpointing()
     # Stops the compiler get confused due to cache modifications
     olmo_model.warmup_cache(device)
     if cfg.compile:
