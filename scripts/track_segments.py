@@ -54,7 +54,8 @@ from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from MolmoAct.gripper_tracking import (
+os.sys.path.append('/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct')
+from gripper_tracking import (
     DINOGripperTracker,
     ReferencePatch,
     TrajectoryPoint as TrackerTrajectoryPoint,
@@ -303,11 +304,11 @@ def to_rgb_array(value) -> np.ndarray:
             arr = np.stack([arr] * 3, axis=-1)
         return arr
     if isinstance(value, dict):
-        if value.get("path"):
-            with Image.open(value["path"]) as img:
-                return np.array(img.convert("RGB"), dtype=np.uint8)
         if value.get("bytes") is not None:
             with Image.open(BytesIO(value["bytes"])) as img:
+                return np.array(img.convert("RGB"), dtype=np.uint8)
+        if value.get("path"):
+            with Image.open(value["path"]) as img:
                 return np.array(img.convert("RGB"), dtype=np.uint8)
     raise ValueError(f"Unsupported image container from parquet: {type(value)!r}")
 

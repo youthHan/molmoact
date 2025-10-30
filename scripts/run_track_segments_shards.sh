@@ -24,11 +24,12 @@ pids=()
 for (( shard=0; shard<NUM_SHARDS; shard++ )); do
   echo "[INFO] Launching shard $shard/$NUM_SHARDS"
   CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-$shard} \
-  python3 MolmoAct/scripts/track_segments.py \
+  python3 scripts/track_segments.py \
     --num-shards "$NUM_SHARDS" \
     --shard-index "$shard" \
     "${COMMON_ARGS[@]}" \
-    --output-dir "${OUTPUT_PREFIX}_shard${shard}" &
+    --output-dir "${OUTPUT_PREFIX}_shard${shard}" \
+    --visualize-dir "${OUTPUT_PREFIX}_shard${shard}_viz" &
   pids+=("$!")
   sleep 0.5
 done

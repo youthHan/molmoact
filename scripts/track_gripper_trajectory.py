@@ -25,16 +25,24 @@ Examples::
         --parquet data/libero/run_01.parquet \
         --parquet-image-column image \
         --initial-patch 96 \
-        --disable-history --initial-reference-weight 1.0 \
         --output run_01_traj.json \
         --visualize-dir run_01_viz
 
     # Dump patch indices for frame 0 and a reference crop, then exit
-    python3 MolmoAct/scripts/track_gripper_trajectory.py \
-        --frames-dir data/demos/run_01/frames \
+    python3 scripts/track_gripper_trajectory.py \
+        --parquet /mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_10/train-00001-of-00025.parquet  \
         --grid-frame frame=0,out=run_01_frame0_grid.png \
         --grid-reference path=refs/gripper_close.png,out=ref_grid.png \
-        --grid-only
+        --grid-only --initial-patch 196 \
+        --model-id /mnt/bn/kinetics-lp-maliva/pretrain_models/dinov3/dinov3-vit7b16-pretrain-lvd1689m/
+
+
+python scripts/track_gripper_trajectory.py --parquet /mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_10/train-00000-of-00025.parquet --parquet-image-column image --initial-patch 55 --output run_01_traj.json --visualize-dir run_01_viz  --model-id /mnt/bn/kinetics-lp-maliva/pretrain_models/dinov3/dinov3-vit7b16-pretrain-lvd1689m/ --max-frames 200 --parquet-start 0 \
+    --reference path=/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/gripper_1.png,patch=57,weight=1.5,desc=closeup
+
+python3 scripts/track_gripper_trajectory.py         --parquet /mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_10/train-00000-of-00025.parquet          --grid-frame frame=0,out=run_01_frame0_grid.png --grid-only --initial-patch 196 --model-id /mnt/bn/kinetics-lp-maliva/pretrain_models/dinov3/dinov3-vit7b16-pretrain-lvd1689m/ --grid-reference path=/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/gripper_1.png,out=/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/gripper_1_ref_grid.png
+
+python scripts/track_gripper_trajectory.py --parquet /mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_goal/train-00000-of-00013.parquet --parquet-image-column image --model-id /mnt/bn/kinetics-lp-maliva/pretrain_models/dinov3/dinov3-vit7b16-pretrain-lvd1689m/ --parquet-start 0 --visualize-dir run_00_viz_p7_goal --output run_00_traj_p7.json --disable-history --initial-reference-weight 0.5  --ema-alpha 0.3 --initial-patch 7 --reference path=/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct/gripper_1.png,patch=18,weight=2,desc=closeup 
 
 Run with ``--print-example`` to see both templates inside the CLI.
 """
@@ -51,7 +59,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from PIL import Image, ImageDraw
 
-from MolmoAct.gripper_tracking import DINOGripperTracker, ReferencePatch, TrajectoryPoint
+os.sys.path.append('/mnt/bn/kinetics-lp-maliva/playground_projects/MolmoAct')
+from gripper_tracking import DINOGripperTracker, ReferencePatch, TrajectoryPoint
 
 try:  # Optional dependency for parquet reading
     import pyarrow.parquet as pq
@@ -268,7 +277,7 @@ def load_parquet_frames(
         metadata = pq_file.metadata
         num_row_groups = metadata.num_row_groups if metadata is not None else 1
         for rg_idx in range(num_row_groups):
-            table = pq_file.read_row_group(rg_idx, columns=[image_column])
+            table = pq_file.read_row_group(rg_idx) #, columns=[image_column])
             for row in table.to_pylist():
                 if global_index < start_index:
                     global_index += 1
@@ -278,6 +287,8 @@ def load_parquet_frames(
                 if max_frames is not None and collected >= max_frames:
                     return frames
                 value = row.get(image_column)
+                # if 'annotation' in row:
+                #     continue
                 if value is None:
                     raise ValueError(
                         f"Row {global_index} in {path} is missing column '{image_column}'."
@@ -527,11 +538,11 @@ def main() -> None:
     if args.visualize_dir:
         render_overlays(frames, trajectory, Path(args.visualize_dir))
 
-    print("frame_idx\tpatch_idx\tx\ty\tscore")
+    # print("frame_idx\tpatch_idx\tx\ty\tscore")
     for point in trajectory:
         sx = point.smoothed_x if point.smoothed_x is not None else point.x
         sy = point.smoothed_y if point.smoothed_y is not None else point.y
-        print(f"{point.frame_idx}\t{point.patch_idx}\t{sx:.2f}\t{sy:.2f}\t{point.score:.4f}")
+        # print(f"{point.frame_idx}\t{point.patch_idx}\t{sx:.2f}\t{sy:.2f}\t{point.score:.4f}")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,8 @@ Usage example::
         --annotation-column annotation \
         --max-samples 5 \
         --output annotation_samples.json
+
+python scripts/sample_segment_annotations.py --segments-json dino_tracker_vis/run_all_traj_mixp_10_new_v5_segments.json --tracks-dir  "dino_tracker_in_seg_vis/10_mixp_new_trc_ema0.3_hist_shard*/*json" --parquet  "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_10/*.parquet" --annotation-column annotation --max-samples 5 --parquet-output-dir new-10/ --output dino_tracker_in_seg_vis/10_mixp_new_trc_ema0.3_hist.json --write-updated-parquet 
 """
 from __future__ import annotations
 
@@ -471,7 +473,7 @@ def write_updated_parquet(
             annotation_val = payload.get("annotation")
             if annotation_val is not None:
                 # Update both annotation and conversations only for rows with non-null annotations
-                ann_col[local_idx] = annotation_val
+                ann_col[local_idx] = json.dumps(annotation_val).replace(' ','')
                 if conv_col is not None and payload.get("conversation") is not None:
                     conv_col[local_idx] = update_conversation(
                         conv_col[local_idx], payload["conversation"], strict=True

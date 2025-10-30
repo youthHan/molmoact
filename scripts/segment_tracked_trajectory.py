@@ -32,6 +32,9 @@ Detection heuristic:
 
 Confirmed boundaries split the trajectory into contiguous segments. Each
 segment can optionally be written to JSON or summarized on stdout.
+
+python3 scripts/segment_tracked_trajectory.py --trajectory dino_tracker_vis/run_all_traj_mixp_10_new_v5.json --shift-threshold 40 --steady-window 10 --steady-threshold 18 --anchor-threshold 18 --steady-outliers  5 --history-window  10 --history-threshold 20 --history-outliers  1 --min-segment-length 350 --max-frames-per-segment 1100 --min-gap 300 --output dino_tracker_vis/run_all_traj_mixp_10_new_v5_segments.json --parquet "/mnt/bn/kinetics-lp-maliva/data/molmoact_data/allenai/libero/libero_10/*parquet"
+4152->4665 4666->5149
 """
 from __future__ import annotations
 

@@ -481,7 +481,7 @@ def visualize_pipeline(
             pool_boxes,
             color=(0, 255, 255),
             thickness=int(pool_thickness),
-            alpha=float(pool_alpha),
+            alpha=1.0 # float(pool_alpha),
         )
         blank = np.zeros_like(artifacts["canvas"], dtype=np.uint8)
         boxes_canvas = _draw_boxes_overlay(

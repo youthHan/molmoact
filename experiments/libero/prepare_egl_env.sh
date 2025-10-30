@@ -4,19 +4,22 @@ export LIBGL_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri/
 
 export PATH=/mnt/bn/kinetics-lp-maliva/envs/sum-cuda-12.4/bin:$PATH
 export LD_LIBRARY_PATH=/mnt/bn/kinetics-lp-maliva/envs/sum-cuda-12.4/lib64:$LD_LIBRARY_PATH
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
+# comment the lines related to MUJOCO_EGL_DEVICE_ID and CUDA_VISIBLE_DEVICES
+/opt/conda/lib/python3.11/site-packages/robosuite/utils/binding_utils.py
+CUDA_VISIBLE_DEVICES=4,5,6,7 MUJOCO_EGL_DEVICE_ID=0
 
 sudo chown -R tiger:tiger /opt/conda/
 source /opt/conda/bin/activate 
 cd ../LIBERO
 /opt/conda/bin/pip install -e .
-/opt/conda/bin/pip install easydict==1.9 einops==0.4.1 robosuite==1.4.0 bddl==1.0.1 future==0.18.2 matplotlib==3.5.3 cloudpickle==2.1.0 gym==0.25.2 tensorflow==2.15.0
-/opt/conda/bin/pip install transformers==4.52.1 vllm==0.8.5
+/opt/conda/bin/pip install easydict==1.9 einops==0.4.1 robosuite==1.4.0 bddl==1.0.1 future==0.18.2 matplotlib==3.5.3 cloudpickle==2.1.0 gym==0.25.2 tensorflow==2.17.0rc0
+/opt/conda/bin/pip install transformers==4.52.1 vllm==0.8.5 opencv-python-headless==4.12.0.88 numpy==1.26.4
 
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 rm -rf ~/.local/lib/python3.11/site-packages/google/protobuf ~/.local/lib/python3.11/site-packages/protobuf-*.dist-info || true
-
 
 /mnt/bn/kinetics-lp-maliva/envs/conda/envs/bagel/bin/torchrun --nproc_per_node=8 --master_port=19327 /mnt/bn/kinetics-lp-maliva-v6/tools/occu_full.py 
 
