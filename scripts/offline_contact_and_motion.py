@@ -669,6 +669,9 @@ def prepost_and_exclusion_candidates(
     dir_cos_min: float = 0.9,
     excl_radius: float = 22.0,
     excl_percent: float = 0.75,
+    allow_appearance: bool = False,
+    min_pre_vis: float = 0.3,
+    min_post_vis: float = 0.5,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Return (candidate_mask[N], gripper_mask[N]) selecting likely object points.
 
@@ -684,29 +687,36 @@ def prepost_and_exclusion_candidates(
     if pre_e <= pre_s or post_e <= post_s:
         return np.zeros(N, dtype=bool), np.zeros(N, dtype=bool)
 
-    # distances to gripper
+    # distances to gripper (mask invisibles)
     d = np.linalg.norm(tracks_xy - g_xy[:, None, :], axis=-1)  # T,N
-    d_pre = np.median(d[pre_s:pre_e + 1], axis=0)
-    d_post = np.median(d[post_s:post_e + 1], axis=0)
+    d = np.where(vis, d, np.nan)
+    with np.errstate(all='ignore'):
+        d_pre = np.nanmedian(d[pre_s:pre_e + 1], axis=0)
+        d_post = np.nanmedian(d[post_s:post_e + 1], axis=0)
+    # visibility ratios
+    pre_vis = vis[pre_s:pre_e + 1].mean(axis=0)
+    post_vis = vis[post_s:post_e + 1].mean(axis=0)
 
     # exclusion: near gripper most of post window
     near = (d[post_s:post_e + 1] <= excl_radius) & vis[post_s:post_e + 1]
     near_ratio = near.mean(axis=0)
     gripper_mask = near_ratio >= excl_percent
 
-    # onset near contact: speed rise
+    # onset near contact: speed rise (use visible frames)
     vx = np.gradient(tracks_xy[..., 0], axis=0)
     vy = np.gradient(tracks_xy[..., 1], axis=0)
     speed_i = np.linalg.norm(np.stack([vx, vy], axis=-1), axis=-1)  # T,N
+    speed_i = np.where(vis, speed_i, np.nan)
     g_vx = np.gradient(g_xy[:, 0])
     g_vy = np.gradient(g_xy[:, 1])
     g_speed = np.hypot(g_vx, g_vy)  # T
     # choose peak onset within lag frames after contact
     onset_ok = np.zeros(N, dtype=bool)
     if onset_lag >= 0:
-        s_pre = np.median(speed_i[max(0, contact_t - 3):contact_t], axis=0)
-        s_post = np.median(speed_i[contact_t:min(T - 1, contact_t + onset_lag) + 1], axis=0)
-        onset_ok = s_post > s_pre
+        with np.errstate(all='ignore'):
+            s_pre = np.nanmedian(speed_i[max(0, contact_t - 3):contact_t], axis=0)
+            s_post = np.nanmedian(speed_i[contact_t:min(T - 1, contact_t + onset_lag) + 1], axis=0)
+        onset_ok = np.nan_to_num(s_post) > np.nan_to_num(s_pre)
 
     # speed/direction similarity post-contact
     # compute medians over post window
@@ -715,8 +725,9 @@ def prepost_and_exclusion_candidates(
     dir_ok = np.zeros(N, dtype=bool)
     spd_ok = np.zeros(N, dtype=bool)
     if gmag > 1e-5:
-        ivx = np.median(vx[post_s:post_e + 1], axis=0)
-        ivy = np.median(vy[post_s:post_e + 1], axis=0)
+        with np.errstate(all='ignore'):
+            ivx = np.nanmedian(np.where(vis[post_s:post_e + 1], vx[post_s:post_e + 1], np.nan), axis=0)
+            ivy = np.nanmedian(np.where(vis[post_s:post_e + 1], vy[post_s:post_e + 1], np.nan), axis=0)
         imags = np.hypot(ivx, ivy) + 1e-6
         # cosine similarity with gripper median velocity
         cos = (ivx * gv_post[0] + ivy * gv_post[1]) / (imags * gmag)
@@ -725,8 +736,12 @@ def prepost_and_exclusion_candidates(
         ratio = imags / gmag
         spd_ok = (ratio >= speed_ratio_min) & (ratio <= speed_ratio_max)
 
-    candidate = (d_pre >= dpre_min) & (d_post <= dpost_max) & onset_ok & dir_ok & spd_ok & (~gripper_mask)
-    candidate = candidate & np.any(vis[post_s:post_e + 1], axis=0)
+    # appearance allowance: if pre visibility too low, skip d_pre check
+    pre_ok = (d_pre >= dpre_min)
+    if allow_appearance:
+        pre_ok = pre_ok | (pre_vis < min_pre_vis)
+    post_ok = (d_post <= dpost_max) & (post_vis >= min_post_vis)
+    candidate = pre_ok & post_ok & onset_ok & dir_ok & spd_ok & (~gripper_mask)
     return candidate, gripper_mask
 
 
@@ -896,6 +911,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dino-sim-gripper-thr", type=float, default=0.88)
     p.add_argument("--dino-pre-frames", type=int, default=2)
     p.add_argument("--dino-post-frames", type=int, default=8)
+    p.add_argument("--allow-appearance", action="store_true", help="Allow points that become visible only after contact to pass pre-distance checks")
+    p.add_argument("--min-pre-visible-percent", type=float, default=0.3, help="If pre visibility < this, treat as appearance (when --allow-appearance)")
+    p.add_argument("--min-post-visible-percent", type=float, default=0.5, help="Require this post visibility for candidates")
     return p.parse_args()
 
 
@@ -1125,6 +1143,9 @@ def main() -> None:
             dir_cos_min=args.dir_cos_min,
             excl_radius=args.exclude_near_gripper_radius,
             excl_percent=args.exclude_near_gripper_percent,
+            allow_appearance=args.allow_appearance,
+            min_pre_vis=args.min_pre_visible_percent,
+            min_post_vis=args.min_post_visible_percent,
         )
 
         # Optional DINO gating to remove gripper-appearance points
@@ -1201,9 +1222,14 @@ def main() -> None:
         "clusters": {int(cid): [int(i) for i in idxs] for cid, idxs in clusters.items()},
         "params": {
             "grid_size": args.grid_size,
+            "cotracker_vis_thr": args.cotracker_vis_thr,
+            "cotracker_backward": args.cotracker_backward,
+            "roi_densify": args.roi_densify,
+            "roi_radius": args.roi_radius if args.roi_densify else None,
             "local_radius": args.local_radius,
             "jerk_z": args.jerk_z,
             "local_speed_z": args.local_speed_z,
+            "local_speed_level_z": args.local_speed_level_z,
             "cluster_window": args.cluster_window,
             "min_disp": args.min_disp,
             "angle_thr_deg": args.angle_thr_deg,
@@ -1217,6 +1243,9 @@ def main() -> None:
             "speed_ratio_min": args.speed_ratio_min,
             "speed_ratio_max": args.speed_ratio_max,
             "dir_cos_min": args.dir_cos_min,
+            "allow_appearance": args.allow_appearance,
+            "min_pre_visible_percent": args.min_pre_visible_percent,
+            "min_post_visible_percent": args.min_post_visible_percent,
             "dino_gating": args.dino_gating,
             "dino_sim_gripper_thr": args.dino_sim_gripper_thr if args.dino_gating else None,
             "baseline_v0": args.baseline_v0,
