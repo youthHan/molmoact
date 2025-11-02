@@ -27,9 +27,10 @@ IM_START_TOKEN = f"<im_start>"
 IM_END_TOKEN = f"<im_end>"
 IM_COL_TOKEN = f"<im_col>"
 IMAGE_PROMPT = "<|image|>"
+PATCH_PROMPT = "<patch>"
 
 EXTRA_TOKENS = (IM_START_TOKEN, IM_END_TOKEN, IMAGE_PATCH_TOKEN,
-                IM_COL_TOKEN, IMAGE_PROMPT, IMAGE_LOW_RES_TOKEN)
+                IM_COL_TOKEN, IMAGE_PROMPT, IMAGE_LOW_RES_TOKEN, PATCH_PROMPT)
 
 DEPTH_TOKENS = ["<DEPTH_START>", "<DEPTH_END>"] + [f"<DEPTH_{num}>" for num in range(128)]
 
@@ -58,6 +59,7 @@ class HfTokenizerWrapper:
         self.image_patch_token_id = special_tokens[IMAGE_PATCH_TOKEN]
         self.image_low_res_token_id = special_tokens[IMAGE_LOW_RES_TOKEN]
         self.image_prompt_token_id = special_tokens[IMAGE_PROMPT]
+        self.patch_prompt_token_id = special_tokens[PATCH_PROMPT]
 
     def encode(self, x: str):
         return self.tokenizer.encode(x, add_special_tokens=False)

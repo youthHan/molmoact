@@ -121,6 +121,7 @@ class RobotHfDataset(HfDataset):
         style: str = "demo",
         keep_in_memory: bool = False,
         num_proc: int = 16,
+        append_patches_to_image_list: bool = True,
         **hf_kwargs,
     ):
         """
@@ -131,6 +132,8 @@ class RobotHfDataset(HfDataset):
             width, height: if both provided, images are resized in get().
             style: string passed through in get() output.
             keep_in_memory: passed through to HfDataset (speeds up random access on smaller shards).
+            append_patches_to_image_list: if True, patches are appended to the camera list in `image`
+                for backwards compatibility. Disable once downstream consumers read from `patches`.
             **hf_kwargs: forwarded to datasets.load_dataset (e.g., streaming=True).
         """
         assert self.PATH, "Subclass must define PATH"
@@ -141,6 +144,7 @@ class RobotHfDataset(HfDataset):
         self.style = style
         self.width = width
         self.height = height
+        self.append_patches_to_image_list = append_patches_to_image_list
 
         # Load from HF directly (no materialization to a local path-indexed dataset)
         super().__init__(split=split, keep_in_memory=keep_in_memory, name=dataset_name, num_proc=num_proc, **hf_kwargs)
@@ -158,10 +162,18 @@ class RobotHfDataset(HfDataset):
             return pil.resize((self.width, self.height), resample=Image.BILINEAR)
         return pil
 
-    def _extract_images(self, ex: Dict) -> List[Image.Image]:
-        """Collect PILs for all camera_fields, supporting both top-level and nested 'images' layouts."""
-        out: List[Image.Image] = []
+    def _extract_images(self, ex: Dict) -> Tuple[List[Image.Image], List[Image.Image]]:
+        """Collect PILs for configured cameras and any additional patch images.
+
+        Supports both top-level image columns and nested layouts like ex['images'][cam].
+        Returns:
+            camera_images: images corresponding to `self.camera_fields`
+            patch_images: images retrieved from any recognised patch-oriented columns
+        """
+        camera_images: List[Image.Image] = []
+        patch_images: List[Image.Image] = []
         images_nested = ex.get("images") if isinstance(ex, dict) else None  # some configs store under ex['images'][cam]
+        # 1) Collect primary/midtraining camera images
         for cam in self.camera_fields:
             val = None
             if cam in ex and ex[cam] is not None:
@@ -169,8 +181,38 @@ class RobotHfDataset(HfDataset):
             elif isinstance(images_nested, dict) and cam in images_nested and images_nested[cam] is not None:
                 val = images_nested[cam]
             if val is not None:
-                out.append(self._maybe_resize(val))
-        return out
+                camera_images.append(self._maybe_resize(val))
+        # 2) Optionally collect extra patch images if provided by the dataset
+        # Expected schema: a top-level column like 'image_patches' that is a list/sequence
+        # of images, or nested under ex['images'] with a similar key. We limit to 3.
+        patch_sources: List[Any] = []
+        # top-level variants
+        for key in ("image_patches", "patch_images", "patches"):
+            if key in ex and ex[key] is not None:
+                patch_sources = ex[key]
+                break
+        # nested under 'images'
+        if not patch_sources and isinstance(images_nested, dict):
+            for key in ("image_patches", "patch_images", "patches"):
+                if key in images_nested and images_nested[key] is not None:
+                    patch_sources = images_nested[key]
+                    break
+        if patch_sources:
+            try:
+                # Ensure we can iterate; HF may give list, tuple, or a dict of patches
+                if isinstance(patch_sources, dict):
+                    # deterministic order: sort by key if possible
+                    items = [patch_sources[k] for k in sorted(patch_sources.keys())]
+                else:
+                    items = list(patch_sources)
+                for patch in items[:3]:  # cap at 3 patches per example
+                    if patch is not None:
+                        patch_images.append(self._maybe_resize(patch))
+            except Exception:
+                # Be tolerant of unexpected schemas; just skip patches if unreadable
+                pass
+
+        return camera_images, patch_images
 
     # ---- API ----
     def get(self, item, rng):
@@ -185,11 +227,16 @@ class RobotHfDataset(HfDataset):
             raise NotImplementedError(f'Not supported format of conversation in {str(type(conv))}')
 
         # Single camera -> return single PIL; Multi -> list of PIL
-        image_out = self._extract_images(ex)
+        camera_images, patch_images = self._extract_images(ex)
+        if getattr(self, "append_patches_to_image_list", True):
+            image_out = camera_images + patch_images
+        else:
+            image_out = camera_images
 
         return dict(
             style=self.style,
             image=image_out,
+            patches=patch_images if patch_images else [],
             question=conv["value"][0],
             answers=conv["value"][1],
             annotation=ex.get("annotation", None),
